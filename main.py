@@ -4,10 +4,11 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError, SessionPasswordNeededError, PhoneCodeInvalidError
 
-API_ID = 9661697
-API_HASH = "4ae76784fdfecd5df142004955bb8393"
-BOT_TOKEN = "9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8"
-ADMIN_ID = 5723475089
+# --- اعداداتك - جاهزة ---
+API_ID = int(os.getenv("API_ID", "9661697"))
+API_HASH = os.getenv("API_HASH", "4ae76784fdfecd5df142004955bb8393")
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN") or "9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8"
+ADMIN_ID = int(os.getenv("ADMIN_ID", "5723475089"))
 DATA_FILE = "data.json"
 logging.basicConfig(level=logging.INFO)
 
@@ -59,7 +60,6 @@ def back_kb(): return [[Button.inline("🔙 رجوع","main")]]
 bot = TelegramClient("bot", API_ID, API_HASH)
 posting_tasks={}
 stats_today={"count":0}
-# حفظ مؤقت لعملية الدخول: uid -> {phone, phone_code_hash, client}
 login_tmp={}
 
 async def send_one(uid, acc_key, grp_id):
@@ -289,13 +289,10 @@ async def on_msg(e):
     if not st or e.text and e.text.startswith("/"): return
     s=get_settings(uid)
     txt=(e.text or "").strip()
-
-    # --- 1. اضافة حساب بالرقم ---
     if st=="wait_phone":
         phone=txt
         if not phone.startswith("+"):
             await e.respond("دز الرقم مع + مثلاً +964770..."); return
-        # انشاء عميل مؤقت وارسال الكود
         try:
             client=TelegramClient(StringSession(), API_ID, API_HASH)
             await client.connect()
@@ -311,7 +308,6 @@ async def on_msg(e):
         if not tmp: await e.respond("صارت مشكلة، دز الرقم من جديد"); user_state[uid]="wait_phone"; return
         try:
             await tmp["client"].sign_in(tmp["phone"], txt, phone_code_hash=tmp["hash"])
-            # نجح بدون كلمة مرور ثانوية
             sess=tmp["client"].session.save()
             key=f"acc_{len(db['accounts'])+1}"
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
@@ -320,7 +316,7 @@ async def on_msg(e):
             await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}", buttons=main_kb(uid))
         except SessionPasswordNeededError:
             user_state[uid]="wait_2fa"
-            await e.respond("🔐 عندك تحقق بخطوتين\nدز كلمة المرور الثانوية، واذا ما عندك دز 'ماعندي'؟\nاذا نسيتها، دزها هسه:")
+            await e.respond("🔐 عندك تحقق بخطوتين\nدز كلمة المرور الثانوية:")
         except PhoneCodeInvalidError:
             await e.respond("الكود غلط، دز الكود الصحيح:")
         except Exception as ex:
@@ -341,7 +337,6 @@ async def on_msg(e):
         except Exception as ex:
             await e.respond(f"كلمة المرور غلط: {ex}\nحاول مرة ثانية:")
         return
-
     if st.startswith("wait_grp_"):
         gid=txt; db["groups"][gid]={"owner":uid,"title":gid}; save(); user_state.pop(uid,None)
         await e.respond(f"تم اضافة المجموعة {gid} ✅", buttons=main_kb(uid)); return
