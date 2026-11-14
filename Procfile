@@ -1,1 +1,1 @@
-worker: python "NASHERALOSH (1).py"
+worker: python "main.py"
