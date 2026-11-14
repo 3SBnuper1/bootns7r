@@ -1,14 +1,15 @@
-# main.py - بوت النشر التلقائي - النسخة النهائية + دخول بالرقم والكود
+# main.py - بوت النشر التلقائي - النسخة النهائية + اشتراك اجباري + VIP
 import asyncio, json, os, random, datetime, logging
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError, UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError, SessionPasswordNeededError, PhoneCodeInvalidError
+from telethon.errors import FloodWaitError, UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError, SessionPasswordNeededError, PhoneCodeInvalidError, UserAlreadyParticipantError, UserNotParticipantError
 
-# --- اعداداتك - جاهزة ---
+# --- اعداداتك ---
 API_ID = int(os.getenv("API_ID", "9661697"))
 API_HASH = os.getenv("API_HASH", "4ae76784fdfecd5df142004955bb8393")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN") or "9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5723475089"))
+DEVELOPER = "@i999l9"
 DATA_FILE = "data.json"
 logging.basicConfig(level=logging.INFO)
 
@@ -29,8 +30,14 @@ def get_settings(uid):
         save()
     return db["settings"][uid]
 
+def get_forced_channel():
+    # الاشتراك الاجباري ناخذه من اعدادات الادمن
+    s = db["settings"].get(str(ADMIN_ID), {})
+    return s.get("forced_channel")
+
 def is_admin(uid): return uid==ADMIN_ID
 def is_vip(uid):
+    if is_admin(uid): return True
     v=db["vip"].get(str(uid))
     if not v: return False
     if v.get("expire")=="lifetime": return True
@@ -61,6 +68,35 @@ bot = TelegramClient("bot", API_ID, API_HASH)
 posting_tasks={}
 stats_today={"count":0}
 login_tmp={}
+
+# --- فحص الاشتراك الاجباري ---
+async def check_forced(uid):
+    ch = get_forced_channel()
+    if not ch: return True
+    if is_admin(uid): return True
+    try:
+        await bot.get_participant(ch, uid)
+        return True
+    except UserNotParticipantError:
+        return False
+    except Exception:
+        return True  # اذا القناة خاصة او خطأ، لا نمنع المستخدم
+
+async def check_vip_gate(e, uid):
+    # يرجع True اذا مسموح له يكمل، False اذا انمنع
+    if is_admin(uid): return True
+    # 1. اشتراك اجباري اولاً
+    if not await check_forced(uid):
+        ch = get_forced_channel()
+        await e.respond(f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة اولاً حتى تستخدم البوت:\n{ch}\n\nبعد ما تشترك دوس /start",
+        buttons=[[Button.url("📢 اشترك بالقناة", f"https://t.me/{ch.replace('@','')}")], [Button.inline("✅ تحققت من الاشتراك","check_forced")]])
+        return False
+    # 2. VIP
+    if not is_vip(uid):
+        await e.respond(f"❌ انت غير مشترك VIP\n\nهذا البوت للمشتركين فقط.\n\nراسل المطور للتفعيل:\n{DEVELOPER}\n\nبعد التفعيل دز /start",
+        buttons=[[Button.url("📩 راسل المطور", f"https://t.me/{DEVELOPER.replace('@','')}")]])
+        return False
+    return True
 
 async def send_one(uid, acc_key, grp_id):
     s=get_settings(uid)
@@ -151,11 +187,32 @@ async def start(e):
     save()
     if is_new and uid!=ADMIN_ID:
         await bot.send_message(ADMIN_ID, f"🔔 دخل مستخدم جديد\nالاسم: {sender.first_name}\nاليوزر: @{sender.username}\nالايدي: {uid}\nالوقت: {db['users'][str(uid)]['time']}")
+    # --- البوابة: اشتراك اجباري ثم VIP ---
+    if not await check_vip_gate(e, uid):
+        return
     await e.respond("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid))
 
 @bot.on(events.CallbackQuery)
 async def cb(e):
-    uid=e.sender_id; data=e.data.decode(); await e.answer()
+    uid=e.sender_id; data=e.data.decode()
+    # زر التحقق من الاشتراك الاجباري مسموح للكل
+    if data=="check_forced":
+        if await check_forced(uid):
+            if not is_vip(uid) and not is_admin(uid):
+                await e.edit(f"❌ انت غير مشترك VIP\n\nراسل المطور للتفعيل:\n{DEVELOPER}", buttons=[[Button.url("📩 راسل المطور", f"https://t.me/{DEVELOPER.replace('@','')}")]])
+                return
+            await e.edit("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid))
+        else:
+            ch=get_forced_channel()
+            await e.answer("ما اشتركت بعد! اشترك اولاً", alert=True)
+        return
+    # باقي الازرار لازم VIP
+    if not is_admin(uid) and not is_vip(uid):
+        # نسمح بس بفحص اشتراكي
+        if data not in ["check_my_vip","main"]:
+            await e.answer("❌ انت غير مشترك VIP - راسل المطور @i999l9", alert=True)
+            return
+    await e.answer()
     s=get_settings(uid)
     if data=="main":
         await e.edit("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid)); return
@@ -188,7 +245,7 @@ async def cb(e):
         btns=[[Button.inline("كل الحسابات","add_grp_all")]]+[[Button.inline(db["accounts"][k].get("phone",k),f"add_grp_acc_{k}")] for k in accs]+[[Button.inline("🔙 رجوع","main")]]
         await e.edit("اختر الحساب للمجموعة الجديدة:", buttons=btns); return
     if data.startswith("add_grp_acc_") or data=="add_grp_all":
-        user_state[uid]=f"wait_grp_{data}"; await e.edit("ارسل ايدي الكروب او يوزره (مثلا -100123 او @group):", buttons=back_kb()); return
+        user_state[uid]=f"wait_grp_{data}"; await e.edit("ارسل رابط الكروب كامل (مثلاً https://t.me/+xxxx او https://t.me/group):", buttons=back_kb()); return
     if data.startswith("del_grp_"):
         k=data.replace("del_grp_",""); db["groups"].pop(k,None); save(); await e.edit("تم حذف المجموعة ✅", buttons=back_kb()); return
     if data=="posting":
@@ -273,7 +330,7 @@ async def cb(e):
         await e.edit(f"تم تفعيل VIP للمستخدم {target} ✅", buttons=back_kb()); return
     if data=="check_my_vip":
         if is_vip(uid): await e.edit(f"اشتراكك: VIP ✅\n{vip_left(uid)}", buttons=back_kb())
-        else: await e.edit("اشتراكك: عادي ❌\nما عندك VIP", buttons=back_kb())
+        else: await e.edit(f"اشتراكك: عادي ❌\nما عندك VIP\nراسل المطور للتفعيل: {DEVELOPER}", buttons=[[Button.url("📩 راسل المطور", f"https://t.me/{DEVELOPER.replace('@','')}")]])
         return
     if data=="check_acc":
         txt="🔍 فحص الحسابات:\n\n"
@@ -287,6 +344,10 @@ async def cb(e):
 async def on_msg(e):
     uid=e.sender_id; st=user_state.get(uid)
     if not st or e.text and e.text.startswith("/"): return
+    # اي رسالة عادية لازم تكون VIP
+    if not is_admin(uid) and not is_vip(uid):
+        await e.respond(f"❌ انت غير مشترك VIP\nراسل المطور للتفعيل: {DEVELOPER}")
+        return
     s=get_settings(uid)
     txt=(e.text or "").strip()
     if st=="wait_phone":
@@ -338,8 +399,90 @@ async def on_msg(e):
             await e.respond(f"كلمة المرور غلط: {ex}\nحاول مرة ثانية:")
         return
     if st.startswith("wait_grp_"):
-        gid=txt; db["groups"][gid]={"owner":uid,"title":gid}; save(); user_state.pop(uid,None)
-        await e.respond(f"تم اضافة المجموعة {gid} ✅", buttons=main_kb(uid)); return
+        link = txt.strip()
+        chosen = st.replace("wait_grp_", "")
+        accs = []
+        if chosen.startswith("add_grp_acc_"):
+            acc_key = chosen.replace("add_grp_acc_", "")
+            if acc_key in db["accounts"] and db["accounts"][acc_key]["owner"] == uid:
+                accs = [(acc_key, db["accounts"][acc_key])]
+            else:
+                await e.respond("الحساب مو موجود"); user_state.pop(uid,None); return
+            mode_txt = f"للحساب {db['accounts'][acc_key].get('phone')}"
+        else:
+            accs = [ (k,v) for k,v in db["accounts"].items() if v["owner"]==uid ]
+            mode_txt = "لجميع الحسابات"
+        if not accs:
+            await e.respond("ما عندك حساب، ضيف حساب اولاً"); user_state.pop(uid,None); return
+        await e.respond(f"جاري فحص {mode_txt} ودخولهم للكروب {link} ... ⏳")
+        joined = 0; skipped = 0; failed = ""; group_id_final = link
+        for acc_key, acc in accs:
+            try:
+                client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+                await client.connect()
+                try:
+                    if "t.me/" in link and "t.me/+" not in link and "t.me/joinchat/" not in link:
+                        username = link.split("t.me/")[-1].split("/")[0].replace("@","")
+                        group_entity = await client.get_entity(username)
+                        group_id_final = str(group_entity.id)
+                        if not group_id_final.startswith("-100") and group_id_final.isdigit():
+                            group_id_final = "-100" + group_id_final
+                        try:
+                            from telethon.tl.functions.channels import GetParticipantRequest
+                            await client(GetParticipantRequest(group_entity, await client.get_me()))
+                            skipped += 1
+                            await client.disconnect()
+                            continue
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if "t.me/+" in link or "t.me/joinchat/" in link:
+                    from telethon.tl.functions.messages import ImportChatInviteRequest
+                    hash_invite = link.split("+")[-1].split("/")[-1]
+                    try:
+                        res = await client(ImportChatInviteRequest(hash_invite))
+                        group_id_final = str(res.chats[0].id)
+                        if not group_id_final.startswith("-100"):
+                            group_id_final = "-100" + group_id_final
+                        joined += 1
+                    except UserAlreadyParticipantError:
+                        skipped += 1
+                    except Exception as ex:
+                        if "already" in str(ex).lower() or "participant" in str(ex).lower():
+                            skipped += 1
+                        else:
+                            failed += f"\n{acc.get('phone')}: {ex}"
+                elif "t.me/" in link:
+                    from telethon.tl.functions.channels import JoinChannelRequest
+                    username = link.split("t.me/")[-1].split("/")[0].replace("@","")
+                    try:
+                        res = await client(JoinChannelRequest(username))
+                        joined += 1
+                    except UserAlreadyParticipantError:
+                        skipped += 1
+                    except Exception as ex:
+                        if "already" in str(ex).lower() or "participant" in str(ex).lower():
+                            skipped += 1
+                        else:
+                            failed += f"\n{acc.get('phone')}: {ex}"
+                else:
+                    group_id_final = link
+                    joined += 1
+                await client.disconnect()
+            except Exception as ex:
+                failed += f"\n{acc.get('phone')}: {ex}"
+        if joined > 0 or skipped > 0:
+            db["groups"][group_id_final] = {"owner":uid, "title":link, "link":link}
+            save(); user_state.pop(uid,None)
+            if len(accs)==1 and skipped==1 and joined==0:
+                await e.respond(f"⏭️ تم التخطي\nالحساب {accs[0][1].get('phone')} موجود اصلاً بالمجموعة، ما حاولت ادخله مرة ثانية ✅\n🆔 ايدي الكروب: {group_id_final}", buttons=main_kb(uid))
+            else:
+                await e.respond(f"تم ✅ ({mode_txt})\n\n✅ دخل جديد: {joined} حساب\n⏭️ تم تخطي (موجود اصلاً): {skipped} حساب\n🆔 ايدي الكروب: {group_id_final}\n{failed}", buttons=main_kb(uid))
+        else:
+            user_state.pop(uid,None)
+            await e.respond(f"فشل الانضمام ❌\nالسبب:\n{failed}", buttons=main_kb(uid))
+        return
     if st=="wait_caption":
         s["caption"]=txt; save(); user_state.pop(uid,None); await e.respond("تم حفظ الكليشة ✅", buttons=main_kb(uid)); return
     if st=="wait_delay":
