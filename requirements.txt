@@ -2,3 +2,5 @@ pyrogram
 tgcrypto
 pyro-listener
 pytz
+telethon==1.45.0
+pyrogram==1.7.1
