@@ -1,4 +1,4 @@
-# main.py - بوت النشر التلقائي - النسخة النهائية + اشتراك اجباري + VIP
+# main.py - بوت النشر التلقائي - النسخة النهائية الكاملة
 import asyncio, json, os, random, datetime, logging
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
@@ -31,7 +31,6 @@ def get_settings(uid):
     return db["settings"][uid]
 
 def get_forced_channel():
-    # الاشتراك الاجباري ناخذه من اعدادات الادمن
     s = db["settings"].get(str(ADMIN_ID), {})
     return s.get("forced_channel")
 
@@ -68,8 +67,25 @@ bot = TelegramClient("bot", API_ID, API_HASH)
 posting_tasks={}
 stats_today={"count":0}
 login_tmp={}
+account_clients={} # جلسات الحسابات تبقى نشطة - ما نفصلها ابداً
 
-# --- فحص الاشتراك الاجباري ---
+async def get_account_client(acc_key):
+    # اذا الحساب متصل اصلاً، رجع نفس الاتصال بدون ما تفصله
+    if acc_key in account_clients:
+        try:
+            c = account_clients[acc_key]
+            if await c.is_user_authorized():
+                return c
+        except:
+            pass
+    acc = db["accounts"].get(acc_key)
+    if not acc: return None
+    client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
+    await client.connect()
+    account_clients[acc_key] = client
+    print(f"✅ جلسة الحساب {acc.get('phone')} بقت نشطة ومتصلة")
+    return client
+
 async def check_forced(uid):
     ch = get_forced_channel()
     if not ch: return True
@@ -80,18 +96,15 @@ async def check_forced(uid):
     except UserNotParticipantError:
         return False
     except Exception:
-        return True  # اذا القناة خاصة او خطأ، لا نمنع المستخدم
+        return True
 
 async def check_vip_gate(e, uid):
-    # يرجع True اذا مسموح له يكمل، False اذا انمنع
     if is_admin(uid): return True
-    # 1. اشتراك اجباري اولاً
     if not await check_forced(uid):
         ch = get_forced_channel()
         await e.respond(f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة اولاً حتى تستخدم البوت:\n{ch}\n\nبعد ما تشترك دوس /start",
         buttons=[[Button.url("📢 اشترك بالقناة", f"https://t.me/{ch.replace('@','')}")], [Button.inline("✅ تحققت من الاشتراك","check_forced")]])
         return False
-    # 2. VIP
     if not is_vip(uid):
         await e.respond(f"❌ انت غير مشترك VIP\n\nهذا البوت للمشتركين فقط.\n\nراسل المطور للتفعيل:\n{DEVELOPER}\n\nبعد التفعيل دز /start",
         buttons=[[Button.url("📩 راسل المطور", f"https://t.me/{DEVELOPER.replace('@','')}")]])
@@ -103,20 +116,19 @@ async def send_one(uid, acc_key, grp_id):
     acc=db["accounts"].get(acc_key)
     if not acc: return False
     try:
-        client=TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
-        await client.connect()
+        client = await get_account_client(acc_key)
         if not await client.is_user_authorized():
             raise AuthKeyUnregisteredError("جلسة منتهية")
         if s["media_enabled"] and s["media_file"] and os.path.exists(s["media_file"]):
             await client.send_file(int(grp_id), s["media_file"], caption=s["caption"])
         else:
             await client.send_message(int(grp_id), s["caption"])
-        await client.disconnect()
+        # ما نفصل ابداً - الجلسة تبقى نشطة
         stats_today["count"]+=1
         return True
     except FloodWaitError as e:
         if s["protect_enabled"]:
-            await bot.send_message(ADMIN_ID, f"🛡️ حماية: حساب {acc_key} انحظر FloodWait {e.seconds} ثانية، وقفت النشر عنه")
+            await bot.send_message(ADMIN_ID, f"🛡️ حماية: حساب {acc_key} انحظر FloodWait {e.seconds} ثانية")
             return False
         await asyncio.sleep(e.seconds); return await send_one(uid,acc_key,grp_id)
     except (UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError) as e:
@@ -187,7 +199,6 @@ async def start(e):
     save()
     if is_new and uid!=ADMIN_ID:
         await bot.send_message(ADMIN_ID, f"🔔 دخل مستخدم جديد\nالاسم: {sender.first_name}\nاليوزر: @{sender.username}\nالايدي: {uid}\nالوقت: {db['users'][str(uid)]['time']}")
-    # --- البوابة: اشتراك اجباري ثم VIP ---
     if not await check_vip_gate(e, uid):
         return
     await e.respond("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid))
@@ -195,7 +206,6 @@ async def start(e):
 @bot.on(events.CallbackQuery)
 async def cb(e):
     uid=e.sender_id; data=e.data.decode()
-    # زر التحقق من الاشتراك الاجباري مسموح للكل
     if data=="check_forced":
         if await check_forced(uid):
             if not is_vip(uid) and not is_admin(uid):
@@ -203,12 +213,9 @@ async def cb(e):
                 return
             await e.edit("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid))
         else:
-            ch=get_forced_channel()
             await e.answer("ما اشتركت بعد! اشترك اولاً", alert=True)
         return
-    # باقي الازرار لازم VIP
     if not is_admin(uid) and not is_vip(uid):
-        # نسمح بس بفحص اشتراكي
         if data not in ["check_my_vip","main"]:
             await e.answer("❌ انت غير مشترك VIP - راسل المطور @i999l9", alert=True)
             return
@@ -229,7 +236,12 @@ async def cb(e):
         user_state[uid]="wait_phone"
         await e.edit("📱 دز رقمك مع رمز الدولة\nمثال: +9647701234567", buttons=back_kb()); return
     if data.startswith("del_acc_"):
-        k=data.replace("del_acc_",""); db["accounts"].pop(k,None); save(); await e.edit("تم حذف الحساب ✅", buttons=back_kb()); return
+        k=data.replace("del_acc_","")
+        if k in account_clients:
+            try: await account_clients[k].disconnect()
+            except: pass
+            del account_clients[k]
+        db["accounts"].pop(k,None); save(); await e.edit("تم حذف الحساب ✅", buttons=back_kb()); return
     if data=="groups":
         grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid or is_admin(uid)]
         txt="👥 إدارة المجموعات\n\n" + ("\n".join([f"{v.get('title',k)}" for k,v in grps]) if grps else "لا توجد مجموعات")
@@ -344,7 +356,6 @@ async def cb(e):
 async def on_msg(e):
     uid=e.sender_id; st=user_state.get(uid)
     if not st or e.text and e.text.startswith("/"): return
-    # اي رسالة عادية لازم تكون VIP
     if not is_admin(uid) and not is_vip(uid):
         await e.respond(f"❌ انت غير مشترك VIP\nراسل المطور للتفعيل: {DEVELOPER}")
         return
@@ -372,9 +383,10 @@ async def on_msg(e):
             sess=tmp["client"].session.save()
             key=f"acc_{len(db['accounts'])+1}"
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
-            await tmp["client"].disconnect()
+            # نخلي الجلسة مفتوحة ونخزنها - ما نفصلها
+            account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ومتصلة ✅", buttons=main_kb(uid))
         except SessionPasswordNeededError:
             user_state[uid]="wait_2fa"
             await e.respond("🔐 عندك تحقق بخطوتين\nدز كلمة المرور الثانوية:")
@@ -392,9 +404,9 @@ async def on_msg(e):
             sess=tmp["client"].session.save()
             key=f"acc_{len(db['accounts'])+1}"
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
-            await tmp["client"].disconnect()
+            account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ومتصلة ✅", buttons=main_kb(uid))
         except Exception as ex:
             await e.respond(f"كلمة المرور غلط: {ex}\nحاول مرة ثانية:")
         return
@@ -414,12 +426,12 @@ async def on_msg(e):
             mode_txt = "لجميع الحسابات"
         if not accs:
             await e.respond("ما عندك حساب، ضيف حساب اولاً"); user_state.pop(uid,None); return
-        await e.respond(f"جاري فحص {mode_txt} ودخولهم للكروب {link} ... ⏳")
+        await e.respond(f"جاري فحص {mode_txt} ودخولهم للكروب {link} ... ⏳\nالجلسة راح تبقى نشطة وما تفصل ✅")
         joined = 0; skipped = 0; failed = ""; group_id_final = link
         for acc_key, acc in accs:
             try:
-                client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
-                await client.connect()
+                # نفس الجلسة النشطة - ما نسوي اتصال جديد ولا نفصل
+                client = await get_account_client(acc_key)
                 try:
                     if "t.me/" in link and "t.me/+" not in link and "t.me/joinchat/" not in link:
                         username = link.split("t.me/")[-1].split("/")[0].replace("@","")
@@ -431,7 +443,6 @@ async def on_msg(e):
                             from telethon.tl.functions.channels import GetParticipantRequest
                             await client(GetParticipantRequest(group_entity, await client.get_me()))
                             skipped += 1
-                            await client.disconnect()
                             continue
                         except Exception:
                             pass
@@ -469,7 +480,7 @@ async def on_msg(e):
                 else:
                     group_id_final = link
                     joined += 1
-                await client.disconnect()
+                # ما نفصل - الجلسة تبقى نشطة
             except Exception as ex:
                 failed += f"\n{acc.get('phone')}: {ex}"
         if joined > 0 or skipped > 0:
@@ -518,10 +529,17 @@ async def on_msg(e):
         save(); user_state.pop(uid,None); await e.respond(f"تم: الاشتراك الاجباري = {s['forced_channel']}", buttons=main_kb(uid)); return
 
 async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    asyncio.create_task(vip_checker()); asyncio.create_task(daily_report())
-    print("Bot Running...")
-    await bot.run_until_disconnected()
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            asyncio.create_task(vip_checker())
+            asyncio.create_task(daily_report())
+            print("Bot Running... - البوت شغال ومستمر ✅")
+            await bot.run_until_disconnected()
+        except Exception as e:
+            print(f"البوت فصل، جاري اعادة التشغيل بعد 5 ثواني... الخطأ: {e}")
+            await asyncio.sleep(5)
+            continue
 
 if __name__=="__main__":
     asyncio.run(main())
