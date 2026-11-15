@@ -1099,4 +1099,4 @@ async def on_msg(e):
     if st == "wait_delay_random":
         try:
             a, b = txt.split("-")
-            s["delay
+            s["delay"]
