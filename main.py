@@ -1,17 +1,18 @@
-# main.py - بوت النشر التلقائي - النسخة النهائية الكاملة
+# main.py - بوت النشر التلقائي - نسخة مصلحة النشر المستمر
 import asyncio, json, os, random, datetime, logging
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError, SessionPasswordNeededError, PhoneCodeInvalidError, UserAlreadyParticipantError, UserNotParticipantError
 
-# --- اعداداتك ---
 API_ID = int(os.getenv("API_ID", "9661697"))
 API_HASH = os.getenv("API_HASH", "4ae76784fdfecd5df142004955bb8393")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN") or os.getenv("TOKEN") or "9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8"
 ADMIN_ID = int(os.getenv("ADMIN_ID", "5723475089"))
 DEVELOPER = "@i999l9"
 DATA_FILE = "data.json"
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("telethon").setLevel(logging.WARNING)
+logging.getLogger("telethon.client.updates").setLevel(logging.CRITICAL)
 
 def load():
     if not os.path.exists(DATA_FILE):
@@ -67,23 +68,22 @@ bot = TelegramClient("bot", API_ID, API_HASH)
 posting_tasks={}
 stats_today={"count":0}
 login_tmp={}
-account_clients={} # جلسات الحسابات تبقى نشطة - ما نفصلها ابداً
+account_clients={}
+tasks_started=False
 
 async def get_account_client(acc_key):
-    # اذا الحساب متصل اصلاً، رجع نفس الاتصال بدون ما تفصله
     if acc_key in account_clients:
         try:
             c = account_clients[acc_key]
             if await c.is_user_authorized():
                 return c
-        except:
-            pass
+        except: pass
     acc = db["accounts"].get(acc_key)
     if not acc: return None
     client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
     await client.connect()
     account_clients[acc_key] = client
-    print(f"✅ جلسة الحساب {acc.get('phone')} بقت نشطة ومتصلة")
+    print(f"✅ جلسة الحساب {acc.get('phone')} بقت نشطة")
     return client
 
 async def check_forced(uid):
@@ -123,8 +123,8 @@ async def send_one(uid, acc_key, grp_id):
             await client.send_file(int(grp_id), s["media_file"], caption=s["caption"])
         else:
             await client.send_message(int(grp_id), s["caption"])
-        # ما نفصل ابداً - الجلسة تبقى نشطة
         stats_today["count"]+=1
+        print(f"✅ نشر: حساب {acc.get('phone')} -> كروب {grp_id}")
         return True
     except FloodWaitError as e:
         if s["protect_enabled"]:
@@ -137,16 +137,27 @@ async def send_one(uid, acc_key, grp_id):
             await bot.send_message(uid, f"⚠️ حساب {acc_key} تعطل: {e}")
         return False
     except Exception as e:
+        print(f"خطأ نشر {acc_key} -> {grp_id}: {e}")
         if s["protect_enabled"]:
             await bot.send_message(uid, f"⚠️ خطأ بالنشر {acc_key}: {e}")
         return False
 
 async def posting_loop(uid, acc_key, grp_id):
+    # نشر مستمر لحد ما انت توقفه بنفسك
     s=get_settings(uid)
+    print(f"▶️ بدأ النشر المستمر: {acc_key} -> {grp_id}")
     while True:
-        await send_one(uid, acc_key, grp_id)
-        delay=random.randint(s["delay_min"], s["delay_max"]) if s["random_enabled"] else s["delay"]
-        await asyncio.sleep(delay)
+        try:
+            await send_one(uid, acc_key, grp_id)
+            delay=random.randint(s["delay_min"], s["delay_max"]) if s["random_enabled"] else s["delay"]
+            print(f"⏳ انتظار {delay} ثانية قبل الرسالة الجاية...")
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            print(f"⏹️ توقف النشر: {acc_key} -> {grp_id}")
+            break
+        except Exception as e:
+            print(f"خطأ باللوب: {e}")
+            await asyncio.sleep(10)
 
 def start_post(uid, acc_key, grp_id):
     key=f"{uid}_{acc_key}_{grp_id}"
@@ -267,33 +278,59 @@ async def cb(e):
               [Button.inline("⚙️ إعدادات النشر التلقائي","auto_settings")],
               [Button.inline("🔙 رجوع","main")]]
         await e.edit("🚀 إدارة النشر", buttons=btns); return
+    # --- اختيار الحساب للنشر ---
     if data in ["start_post","stop_post"]:
         accs=[k for k,v in db["accounts"].items() if v["owner"]==uid]
-        btns=[[Button.inline("كل الحسابات",f"{data}_all")]]+[[Button.inline(db["accounts"][k].get("phone",k),f"{data}_acc_{k}")] for k in accs]+[[Button.inline("🔙 رجوع","posting")]]
-        await e.edit("لجميع الحسابات ام حساب واحد؟", buttons=btns); return
-    if data.startswith("start_post_acc_") or data.startswith("stop_post_acc_") or data in ["start_post_all","stop_post_all"]:
+        if not accs:
+            await e.edit("ما عندك حساب، ضيف حساب اولاً", buttons=back_kb()); return
+        btns=[[Button.inline("كل الحسابات",f"{data}_ALL")]]+[[Button.inline(db["accounts"][k].get("phone",k),f"{data}_ACC_{k}")] for k in accs]+[[Button.inline("🔙 رجوع","posting")]]
+        await e.edit("اختر الحساب للنشر:", buttons=btns); return
+    # --- اختيار المجموعة للنشر - مصلح ---
+    if data.startswith("start_post_ACC_") or data.startswith("stop_post_ACC_") or data in ["start_post_ALL","stop_post_ALL"]:
         mode="start" if data.startswith("start") else "stop"
-        acc_part=data.replace(f"{mode}_post_","")
-        grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid]
-        btns=[[Button.inline("كل المجموعات",f"{mode}_grp_all_{acc_part}")]]+[[Button.inline(v.get('title',k),f"{mode}_grp_{k}_{acc_part}")] for k,v in grps]+[[Button.inline("🔙 رجوع","posting")]]
-        await e.edit("لجميع المجموعات ام مجموعة واحدة؟", buttons=btns); return
-    if data.startswith("start_grp_") or data.startswith("stop_grp_"):
-        parts=data.split("_"); mode=parts[0]; rest=data[len(mode+"_grp_"):]
-        if rest.endswith("_all"):
-            grp="all"; acc_part="all"
+        if data.endswith("_ALL"):
+            acc_part="ALL"
         else:
-            grp, acc_part = rest.rsplit("_",1) if "_" in rest else (rest,"all")
-        if grp=="all" or acc_part=="all":
-            accs=[k for k,v in db["accounts"].items() if v["owner"]==uid] if acc_part=="all" else [acc_part]
-            grps=list(db["groups"].keys()) if grp=="all" else [grp]
-            cnt=0
-            for a in accs:
-                for g in grps:
-                    if mode=="start":
-                        if start_post(uid,a,g): cnt+=1
-                    else:
-                        if stop_post(uid,a,g): cnt+=1
-            await e.edit(f"تم {'بدء' if mode=='start' else 'إيقاف'} النشر لـ {cnt} ✅", buttons=back_kb()); return
+            acc_part=data.replace(f"{mode}_post_ACC_","")
+        grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid]
+        if not grps:
+            await e.edit("ما عندك مجموعة، ضيف مجموعة اولاً", buttons=back_kb()); return
+        btns=[[Button.inline("كل المجموعات",f"{mode}_GRP_ALL__{acc_part}")]]
+        for k,v in grps:
+            btns.append([Button.inline(v.get('title',k)[:30], f"{mode}_GRP_{k}__{acc_part}")])
+        btns.append([Button.inline("🔙 رجوع","posting")])
+        await e.edit("اختر المجموعة للنشر:", buttons=btns); return
+    # --- تنفيذ البدء / الايقاف - مصلح للمجموعة الوحدة والكل ---
+    if data.startswith("start_GRP_") or data.startswith("stop_GRP_"):
+        mode="start" if data.startswith("start") else "stop"
+        rest=data.replace(f"{mode}_GRP_","")
+        # rest = GRP__ACC
+        if "__" in rest:
+            grp_id, acc_part = rest.split("__",1)
+        else:
+            grp_id, acc_part = rest, "ALL"
+        accs=[k for k,v in db["accounts"].items() if v["owner"]==uid] if acc_part=="ALL" else [acc_part]
+        grps=list(db["groups"].keys()) if grp_id=="ALL" else [grp_id]
+        cnt=0; already=0
+        for a in accs:
+            for g in grps:
+                if mode=="start":
+                    if start_post(uid,a,g): cnt+=1
+                    else: already+=1
+                else:
+                    if stop_post(uid,a,g): cnt+=1
+                    else: already+=1
+        if mode=="start":
+            if cnt>0:
+                await e.edit(f"✅ تم بدء النشر المستمر لـ {cnt} 🔁\n\nالنشر راح يبقى مستمر كل {s['delay']} ثانية لحد ما توقفه انت بنفسك من زر إيقاف النشر.\n\nالكليشة: {s['caption'][:100]}", buttons=back_kb())
+            else:
+                await e.edit(f"⚠️ النشر شغال اصلاً لـ {already} - ما يحتاج تبديه مرة ثانية", buttons=back_kb())
+        else:
+            if cnt>0:
+                await e.edit(f"⏹️ تم إيقاف النشر لـ {cnt} ✅", buttons=back_kb())
+            else:
+                await e.edit(f"⚠️ النشر متوقف اصلاً، ماكو شي نوقفه", buttons=back_kb())
+        return
     if data=="set_caption":
         user_state[uid]="wait_caption"; await e.edit("ارسل الكليشة الجديدة:", buttons=back_kb()); return
     if data=="set_delay":
@@ -318,7 +355,8 @@ async def cb(e):
         await e.edit("تم التحديث ✅", buttons=[[Button.inline("🔙 رجوع","auto_settings")]]); return
     if data=="stats":
         if not is_admin(uid): await e.edit("هذا القسم للادمن فقط", buttons=back_kb()); return
-        await e.edit(f"📊 الإحصائيات\n\nعدد المستخدمين: {len(db['users'])}\nعدد الحسابات: {len(db['accounts'])}\nعدد المجموعات: {len(db['groups'])}", buttons=back_kb()); return
+        active=len(posting_tasks)
+        await e.edit(f"📊 الإحصائيات\n\nعدد المستخدمين: {len(db['users'])}\nعدد الحسابات: {len(db['accounts'])}\nعدد المجموعات: {len(db['groups'])}\nنشر شغال حالياً: {active}\nنشرت اليوم: {stats_today['count']}", buttons=back_kb()); return
     if data=="vip_admin":
         if not is_admin(uid): await e.edit("للادمن فقط", buttons=back_kb()); return
         btns=[[Button.inline("➕ تفعيل VIP لمستخدم","vip_add")],[Button.inline("➖ إلغاء VIP","vip_del")],[Button.inline("📋 قائمة الـ VIP","vip_list")],[Button.inline("📢 الاشتراك الإجباري","vip_forced")],[Button.inline("🔙 رجوع","main")]]
@@ -349,7 +387,7 @@ async def cb(e):
         for k,v in db["accounts"].items():
             if v["owner"]!=uid and not is_admin(uid): continue
             running=any(k in kk for kk in posting_tasks.keys())
-            txt+=f"{v.get('phone',k)} - {v.get('status','🟢')} - سبب: {v.get('reason','-')} - النشر: {'شغال ✅' if running else 'متوقف ⏹️'}\n"
+            txt+=f"{v.get('phone',k)} - {v.get('status','🟢')} - النشر: {'شغال ✅' if running else 'متوقف ⏹️'}\n"
         await e.edit(txt, buttons=back_kb()); return
 
 @bot.on(events.NewMessage)
@@ -383,10 +421,9 @@ async def on_msg(e):
             sess=tmp["client"].session.save()
             key=f"acc_{len(db['accounts'])+1}"
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
-            # نخلي الجلسة مفتوحة ونخزنها - ما نفصلها
             account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ومتصلة ✅", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ✅", buttons=main_kb(uid))
         except SessionPasswordNeededError:
             user_state[uid]="wait_2fa"
             await e.respond("🔐 عندك تحقق بخطوتين\nدز كلمة المرور الثانوية:")
@@ -406,7 +443,7 @@ async def on_msg(e):
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
             account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ومتصلة ✅", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ✅", buttons=main_kb(uid))
         except Exception as ex:
             await e.respond(f"كلمة المرور غلط: {ex}\nحاول مرة ثانية:")
         return
@@ -426,11 +463,10 @@ async def on_msg(e):
             mode_txt = "لجميع الحسابات"
         if not accs:
             await e.respond("ما عندك حساب، ضيف حساب اولاً"); user_state.pop(uid,None); return
-        await e.respond(f"جاري فحص {mode_txt} ودخولهم للكروب {link} ... ⏳\nالجلسة راح تبقى نشطة وما تفصل ✅")
+        await e.respond(f"جاري فحص {mode_txt} ودخولهم للكروب {link} ... ⏳")
         joined = 0; skipped = 0; failed = ""; group_id_final = link
         for acc_key, acc in accs:
             try:
-                # نفس الجلسة النشطة - ما نسوي اتصال جديد ولا نفصل
                 client = await get_account_client(acc_key)
                 try:
                     if "t.me/" in link and "t.me/+" not in link and "t.me/joinchat/" not in link:
@@ -480,14 +516,13 @@ async def on_msg(e):
                 else:
                     group_id_final = link
                     joined += 1
-                # ما نفصل - الجلسة تبقى نشطة
             except Exception as ex:
                 failed += f"\n{acc.get('phone')}: {ex}"
         if joined > 0 or skipped > 0:
             db["groups"][group_id_final] = {"owner":uid, "title":link, "link":link}
             save(); user_state.pop(uid,None)
             if len(accs)==1 and skipped==1 and joined==0:
-                await e.respond(f"⏭️ تم التخطي\nالحساب {accs[0][1].get('phone')} موجود اصلاً بالمجموعة، ما حاولت ادخله مرة ثانية ✅\n🆔 ايدي الكروب: {group_id_final}", buttons=main_kb(uid))
+                await e.respond(f"⏭️ تم التخطي\nالحساب {accs[0][1].get('phone')} موجود اصلاً بالمجموعة ✅\n🆔 ايدي الكروب: {group_id_final}", buttons=main_kb(uid))
             else:
                 await e.respond(f"تم ✅ ({mode_txt})\n\n✅ دخل جديد: {joined} حساب\n⏭️ تم تخطي (موجود اصلاً): {skipped} حساب\n🆔 ايدي الكروب: {group_id_final}\n{failed}", buttons=main_kb(uid))
         else:
@@ -529,11 +564,14 @@ async def on_msg(e):
         save(); user_state.pop(uid,None); await e.respond(f"تم: الاشتراك الاجباري = {s['forced_channel']}", buttons=main_kb(uid)); return
 
 async def main():
+    global tasks_started
     while True:
         try:
             await bot.start(bot_token=BOT_TOKEN)
-            asyncio.create_task(vip_checker())
-            asyncio.create_task(daily_report())
+            if not tasks_started:
+                asyncio.create_task(vip_checker())
+                asyncio.create_task(daily_report())
+                tasks_started=True
             print("Bot Running... - البوت شغال ومستمر ✅")
             await bot.run_until_disconnected()
         except Exception as e:
