@@ -1,24 +1,43 @@
+import asyncio, json, os, random, datetime
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, CallbackQuery, ForceReply, InlineKeyboardMarkup as Markup, InlineKeyboardButton as Button
-from pyrogram.errors import ApiIdInvalid, PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, ChatWriteForbidden, BotMethodInvalid, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked
-import os
-os.system("pip install pyrolistener")
-from pyrolistener import Listener, exceptions
-from asyncio import create_task, sleep, get_event_loop
-from datetime import datetime, timedelta
+from pyrogram.errors import PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, ChatWriteForbidden, BotMethodInvalid, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked
+from datetime import datetime as dt, timedelta
 from pytz import timezone
 from typing import Union
-import json, os, random
 
-# ===== نفس برمجة الكود الثاني - Pyrogram =====
-app = Client("autoPost", api_id="9661697", api_hash="4ae76784fdfecd5df142004955bb8393", bot_token="9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8")
-loop = get_event_loop()
-listener = Listener(client=app)
+# ===== Pyrogram بدون pyrolistener =====
+app = Client("autoPost", api_id=9661697, api_hash="4ae76784fdfecd5df142004955bb8393", bot_token="9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8")
+loop = asyncio.get_event_loop()
 owner = 5723475089
 DEV = "@i999l9"
 _timezone = timezone("Asia/Baghdad")
 
-# ===== نفس التخزين مال الكود الاول، بس بملف واحد مثل الكود الثاني =====
+# ===== Listener بديل - من داخل الكود، بدون مكتبة =====
+waiting = {}
+class TimeOut(Exception): pass
+async def wait_input(uid, text, timeout=60, reply_markup=None, reply_to_message_id=None):
+    await app.send_message(uid, text, reply_markup=reply_markup, reply_to_message_id=reply_to_message_id)
+    fut = loop.create_future()
+    waiting[uid] = fut
+    try:
+        ans = await asyncio.wait_for(fut, timeout=timeout)
+        return ans
+    except asyncio.TimeoutError:
+        raise TimeOut()
+    finally:
+        waiting.pop(uid, None)
+
+@app.on_message(filters.private & ~filters.command(["start","admin"]) , group=-1)
+async def _on_wait_input(_: Client, message: Message):
+    uid = message.from_user.id
+    if uid in waiting and not waiting[uid].done():
+        # اذا كان ينتظر جواب، نطيه الرسالة وما نكمل لباقي الهاندلرات
+        waiting[uid].set_result(message)
+        # نوقف انتشار الرسالة حتى ما تروح لغير هاندلر
+        message.stop_propagation()
+
+# ===== التخزين =====
 users_db = "data.json"
 def write(fp, data):
     with open(fp, "w", encoding="utf-8") as file: json.dump(data, file, indent=2, ensure_ascii=False)
@@ -27,15 +46,11 @@ def read(fp):
         write(fp, {"users":{},"accounts":{},"groups":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{}})
     with open(fp, encoding="utf-8") as file: return json.load(file)
 db = read(users_db)
-users = db["users"]
-accounts = db["accounts"]
-groups_db = db["groups"]
-
 def save(): write(users_db, db)
 def get_settings(uid):
     uid=str(uid)
     if uid not in db["settings"]:
-        db["settings"][uid]={"caption":"اهلا بكم 🔥","captions":["اهلا بكم 🔥"],"caption_mode":"single","delay":60,"delay_min":60,"delay_max":120,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"media_type":None,"forced_channel":None}
+        db["settings"][uid]={"caption":"اهلا بكم 🔥","captions":["اهلا بكم 🔥"],"caption_mode":"single","delay":60,"delay_min":60,"delay_max":120,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"media_type":None,"forced_channel":None, "last_post_accs":[], "last_post_groups":[]}
         save()
     s=db["settings"][uid]
     if "captions" not in s: s["captions"]=[s.get("caption","اهلا بكم 🔥")]
@@ -56,15 +71,15 @@ def is_vip(uid):
     if not v: return False
     if v.get("expire")=="lifetime": return True
     try:
-        exp=datetime.fromisoformat(v["expire"])
-        if datetime.now()>exp: del db["vip"][str(uid)]; save(); return False
+        exp=dt.fromisoformat(v["expire"])
+        if dt.now()>exp: del db["vip"][str(uid)]; save(); return False
         return True
     except: return False
 def vip_left(uid):
     v=db["vip"].get(str(uid))
     if not v: return None
     if v.get("expire")=="lifetime": return "مدى الحياة"
-    exp=datetime.fromisoformat(v["expire"]); left=exp-datetime.now()
+    exp=dt.fromisoformat(v["expire"]); left=exp-dt.now()
     return f"{left.days} يوم - {exp.strftime('%Y-%m-%d')}"
 def is_force(acc): return acc in db.get("force_stopped",[])
 def force_acc(acc):
@@ -76,17 +91,10 @@ def bkey(a,g): return f"{a}__{g}"
 def is_blocked(a,g): return bkey(a,g) in db.get("blocked",{})
 def force_block(uid,a,g,reason="انطرد"):
     db.setdefault("blocked",{})
-    db["blocked"][bkey(a,g)]={"owner":uid,"acc":a,"grp":g,"reason":reason,"time":datetime.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
+    db["blocked"][bkey(a,g)]={"owner":uid,"acc":a,"grp":g,"reason":reason,"time":dt.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
 def t(v): return "✅ مفعل" if v else "❌ معطل"
-
-# ===== نفس الـ Markup مال الكود الثاني، بس بكل ازرار الكود الاول =====
 def mainMarkup(uid):
-    r=[
-        [Button("- 📁 الحسابات -", callback_data="accounts")],
-        [Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],
-        [Button("- 👥 احالتي 🎁 -", callback_data="myRef"), Button("- 🥷 التخفي -", callback_data="stealthInfo")],
-        [Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")],
-    ]
+    r=[[Button("- 📁 الحسابات -", callback_data="accounts")],[Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],[Button("- 👥 احالتي 🎁 -", callback_data="myRef"), Button("- 🥷 التخفي -", callback_data="stealthInfo")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]]
     if is_admin(uid): r.append([Button("- 📊 احصائيات -", callback_data="statics"), Button("- 👑 VIP -", callback_data="vipAdmin")])
     r.append([Button("- 👑 اشتراكي -", callback_data="checkMyVip"), Button("- 🔍 فحص -", callback_data="checkAcc")])
     return Markup(r)
@@ -94,7 +102,6 @@ refMarkupForAll = Markup([[Button("- احالتي 🎁 -", callback_data="myRef"
 backMarkup = Markup([[Button("- العوده -", callback_data="toHome")]])
 toHomeMarkup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]])
 
-# ===== نشر Pyrogram - حلقة وحدة مثل الكود الثاني =====
 posting_tasks = {}
 account_clients = {}
 stats_today = {"count":0}
@@ -104,7 +111,7 @@ async def get_user_client(acc_key):
     if acc_key in account_clients:
         try:
             c=account_clients[acc_key]
-            if await c.get_me(): return c
+            await c.get_me(); return c
         except: pass
     acc=db["accounts"].get(acc_key)
     if not acc: return None
@@ -116,7 +123,7 @@ async def notify_admin(kind, uid):
         u=await app.get_users(uid)
         full=f"{u.first_name or ''} {u.last_name or ''}".strip() or "بدون اسم"
         username=f"@{u.username}" if u.username else "بدون يوزر"
-        now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now=dt.now().strftime("%Y-%m-%d %H:%M:%S")
         if kind=="new": msg=f"🔔 دخل مستخدم جديد للبوت\n\n👤 الاسم: {full}\n🔗 اليوزر: {username}\n🆔 الايدي: `{uid}`\n🕐 الوقت: {now}\n👥 عدد المستخدمين الكلي: {len(db.get('users',{}))}"
         else: msg=f"🔔 اشتراك جديد بقناة البوت\n\nقام {full}\n🔗 اليوزر: {username}\n🆔 الايدي: `{uid}`\n🕐 الوقت: {now}\nبالاشتراك بقناة البوت\n\n👥 عدد المشتركين الكلي: {len(db.get('subscribed',[]))}"
         await app.send_message(owner, msg)
@@ -133,17 +140,16 @@ async def subscription(message):
     except: return True
 
 def timeCalc(limit):
-    start=datetime.now(_timezone); end=start+timedelta(days=limit)
+    start=dt.now(_timezone); end=start+timedelta(days=limit)
     return {"current_date":start.strftime("%Y-%m-%d"),"end_date":end.strftime("%Y-%m-%d"),"endTime":end.strftime("%H:%M"),"hours":limit*24,"minutes":limit*24*60}
 
-# ===== START - نفس الكود الثاني + احالة الكود الاول =====
 @app.on_message(filters.command("start") & filters.private)
 async def start(_: Client, message: Message):
     uid=message.from_user.id
     ref_code=None
     if len(message.command)>1 and message.command[1].startswith("ref_"): ref_code=message.command[1].replace("ref_","")
     is_new=str(uid) not in db["users"]
-    db["users"][str(uid)]={"name":message.from_user.first_name or "","username":message.from_user.username or "","id":uid,"time":datetime.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
+    db["users"][str(uid)]={"name":message.from_user.first_name or "","username":message.from_user.username or "","id":uid,"time":dt.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
     if is_new and uid!=owner:
         await notify_admin("new", uid)
         if ref_code and ref_code!=str(uid) and ref_code in db["users"]:
@@ -158,31 +164,29 @@ async def start(_: Client, message: Message):
                     db["referrals"][ref_code]={"invited":[],"rewarded":False}
                     old=db["vip"].get(ref_code)
                     if old and old.get("expire")!="lifetime":
-                        try: new_exp=datetime.fromisoformat(old["expire"])+timedelta(days=1)
-                        except: new_exp=datetime.now()+timedelta(days=1)
-                    else: new_exp=datetime.now()+timedelta(days=1)
+                        try: new_exp=dt.fromisoformat(old["expire"])+timedelta(days=1)
+                        except: new_exp=dt.now()+timedelta(days=1)
+                    else: new_exp=dt.now()+timedelta(days=1)
                     db["vip"][ref_code]={"expire":new_exp.isoformat(),"notified":False}; save()
                     try: await app.send_message(int(ref_code), "🎁 مبروك! جبت 3 احالات\nحصلت على يوم VIP مجاني 👑")
                     except: pass
-    # اشتراك اجباري - مثل الكود الثاني
     sub=await subscription(message)
     if isinstance(sub, str):
         return await message.reply(f"- عذرا عزيزي عليك الإشتراك بقناة البوت أولا لتتمكن استخدامه\n- القناه: {sub}\n- اشترك ثم ارسل /start")
     if not is_vip(uid):
         return await message.reply(f"❌ غير مشترك VIP\nراسل المطور:\n{DEV}\n\n🎁 او جيب 3 اشخاص من رابطك وتاخذ يوم VIP مجاني!", reply_markup=refMarkupForAll)
-    await message.reply("- مرحبا بك عزيزي في بوت النشر التلقائي\n\n- يمكنك استخدام البوت في ارسال الرسائل بشكل متكرر في السوبرات", reply_markup=mainMarkup(uid), reply_to_message_id=message.id)
+    await message.reply("- مرحبا بك عزيزي في بوت النشر التلقائي", reply_markup=mainMarkup(uid), reply_to_message_id=message.id)
 
 @app.on_callback_query(filters.regex(r"^(toHome|main)$"))
 async def toHome(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
-    if uid==owner: pass
-    elif not is_vip(uid): return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
+    if uid!=owner and not is_vip(uid): return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
     await callback.message.edit_text("- مرحبا بك عزيزي في بوت النشر التلقائي", reply_markup=mainMarkup(uid))
 
 @app.on_callback_query(filters.regex(r"^(checkForced)$"))
 async def checkForced(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
-    await sleep(2)
+    await asyncio.sleep(2)
     if await subscription(callback.message):
         if not is_vip(uid): return await callback.message.edit_text(f"❌ غير VIP\nراسل: {DEV}", reply_markup=Markup([[Button("📩 راسل المطور", url=f"https://t.me/{DEV.replace('@','')}")]]))
         if uid!=owner and uid not in db.get("subscribed",[]):
@@ -192,15 +196,14 @@ async def checkForced(_: Client, callback: CallbackQuery):
         ch=get_forced()
         await callback.message.edit_text(f"⚠️ ما اشتركت بعد!\nاشترك:\n{ch}", reply_markup=Markup([[Button("📢 اشترك", url=f"https://t.me/{str(ch).replace('@','')}")],[Button("✅ تحققت", callback_data="checkForced")]]))
 
-# ===== معلومات + احالة + تخفي - للكل، حتى اللي مو VIP =====
 @app.on_callback_query(filters.regex(r"^(aboutBot)$"))
 async def aboutBot(_: Client, callback: CallbackQuery):
-    txt="""ℹ️ معلومات حول البوت - شنو يسوي بالتفصيل؟
+    txt="""ℹ️ معلومات حول البوت
 
 🚀 النشر:
-- تضيف حساباتك التليجرام للبوت
+- تضيف حساباتك للبوت
 - تضيف المجموعات اللي تريد تنشر بيها
-- تكتب كليشة النشر (نص + صورة او فيديو اختياري) - كليشة وحدة او عدة كلايش
+- تكتب كليشة النشر (نص + صورة اختياري) - كليشة وحدة او عدة كلايش
 - البوت ينشر الكليشة بكل المجموعات تلقائياً
 
 🛡️ الحماية - مثل الكود الثاني:
@@ -251,7 +254,6 @@ async def toggleStealth(_: Client, callback: CallbackQuery):
     await callback.answer(f"{'تم تشغيل التخفي 🥷' if s['stealth_enabled'] else 'تم اطفاء التخفي'}", show_alert=True)
     await stealthInfo(_, callback)
 
-# ===== الحسابات - مثل الكود الثاني login + كل خواص الكود الاول =====
 @app.on_callback_query(filters.regex(r"^(accounts)$"))
 async def accountsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -270,10 +272,10 @@ async def addAcc(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     if uid!=owner and not is_vip(uid): return await callback.answer("- انتهت مدة الإشتراك الخاصه بك.", show_alert=True)
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=uid, chat_id=uid, text="- أرسل رقم الهاتف الخاص بك: \n\n- يمكنك ارسال /cancel لإلغاء التسجيل.", reply_markup=ForceReply(selective=True, placeholder="+9647700000"), timeout=30)
-    except exceptions.TimeOut: return await callback.message.reply("- نفد وقت استلام رقم الهاتف", reply_markup=backMarkup)
+    try: ask=await wait_input(uid, "- أرسل رقم الهاتف الخاص بك: \n\n- يمكنك ارسال /cancel لإلغاء التسجيل.", timeout=30, reply_markup=ForceReply(selective=True, placeholder="+9647700000"))
+    except TimeOut: return await callback.message.reply("- نفد وقت استلام رقم الهاتف", reply_markup=backMarkup)
     if ask.text=="/cancel": return await ask.reply("- تم إلغاء العمليه.", reply_to_message_id=ask.id)
-    create_task(registration(ask))
+    asyncio.create_task(registration(ask))
 
 async def registration(message: Message):
     uid=message.from_user.id; _number=message.text
@@ -283,19 +285,19 @@ async def registration(message: Message):
     await client.connect()
     try: p_code_hash=await client.send_code(_number)
     except PhoneNumberInvalid: return await lmsg.edit_text("- رقم الهاتف الذي ادخلته خاطئ", reply_markup=reMarkup)
-    try: code=await listener.listen(from_id=uid, chat_id=uid, text="- تم ارسال كود إلى خاصك قم بإرساله من فضلك.", timeout=120, reply_markup=ForceReply(selective=True, placeholder="1 2 3 4 5 6"))
-    except exceptions.TimeOut: return await lmsg.reply("- نفذ وقت استلام الكود.", reply_markup=reMarkup)
+    try: code=await wait_input(uid, "- تم ارسال كود إلى خاصك قم بإرساله من فضلك.", timeout=120, reply_markup=ForceReply(selective=True, placeholder="1 2 3 4 5 6"))
+    except TimeOut: return await lmsg.reply("- نفذ وقت استلام الكود.", reply_markup=reMarkup)
     try: await client.sign_in(_number, p_code_hash.phone_code_hash, code.text.replace(" ",""))
     except PhoneCodeInvalid: return await code.reply("- لقد قمت بإدخال كود خاطئ.", reply_markup=reMarkup, reply_to_message_id=code.id)
     except PhoneCodeExpired: return await code.reply("- الكود منتهي الصلاحية.", reply_markup=reMarkup, reply_to_message_id=code.id)
     except SessionPasswordNeeded:
-        try: password=await listener.listen(from_id=uid, chat_id=uid, text="- ادخل كلمة مرور التحقق بخطوتين من فضلك.", reply_markup=ForceReply(selective=True, placeholder="- YOUR PASSWORD: "), timeout=180, reply_to_message_id=code.id)
-        except exceptions.TimeOut: return await lmsg.reply("- نفذ وقت استلام كلمة المرور.", reply_markup=reMarkup)
+        try: password=await wait_input(uid, "- ادخل كلمة مرور التحقق بخطوتين من فضلك.", timeout=180, reply_markup=ForceReply(selective=True, placeholder="- YOUR PASSWORD: "), reply_to_message_id=code.id)
+        except TimeOut: return await lmsg.reply("- نفذ وقت استلام كلمة المرور.", reply_markup=reMarkup)
         try: await client.check_password(password.text)
         except PasswordHashInvalid: return await password.reply("- كلمة مرور خاطئه.", reply_markup=reMarkup)
     session=await client.export_session_string()
     await client.disconnect()
-    key=f"acc_{int(datetime.now().timestamp())}_{random.randint(100,999)}"
+    key=f"acc_{int(dt.now().timestamp())}_{random.randint(100,999)}"
     db["accounts"][key]={"owner":uid,"session":session,"phone":_number,"status":"🟢 موجود","reason":"-"}; save()
     await app.send_message(uid, f"تم اضافة ✅ {_number}\n\nهل تريد انضمام الحساب للمجموعات؟", reply_markup=Markup([[Button("✅ اي نعم", callback_data=f"joinPrompt_{key}")],[Button("❌ لا، بعدين", callback_data="toHome")]]))
 
@@ -329,7 +331,6 @@ async def doJoin(_: Client, callback: CallbackQuery):
     g=db["groups"].get(gid); link=g.get("link") if isinstance(g,dict) else g
     try:
         client=await get_user_client(key)
-        # Pyrogram: join_chat يقبل الرابط او الايدي
         try: await client.join_chat(link if link else int(gid))
         except Exception as e:
             if "already" in str(e).lower() or "participant" in str(e).lower(): pass
@@ -345,7 +346,6 @@ async def doJoin(_: Client, callback: CallbackQuery):
         await callback.message.edit_text("📋 اختر المجموعات اللي تريد الحساب ينضم الها:", reply_markup=Markup(markup))
     except Exception as ex: await callback.answer(f"فشل: {ex}", show_alert=True)
 
-# ===== المجموعات - مثل الكود الثاني newSuper/currentSupers + خواص الكود الاول =====
 @app.on_callback_query(filters.regex(r"^(groups)$"))
 async def groupsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -373,11 +373,10 @@ async def addGrpChooseAcc(_: Client, callback: CallbackQuery):
 async def addGrpAsk(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=uid, chat_id=uid, text="- ارسل رابط السوبر لإضافته.\n- يمكنك ارسال /cancel لألغاء العمليه.", reply_markup=ForceReply(selective=True, placeholder="- Super group URL: "), timeout=60)
-    except exceptions.TimeOut: return await callback.message.reply("نفذ وقت استلام الرابط", reply_markup=backMarkup)
+    try: ask=await wait_input(uid, "- ارسل رابط السوبر لإضافته.\n- يمكنك ارسال /cancel لألغاء العمليه.", timeout=60, reply_markup=ForceReply(selective=True, placeholder="- Super group URL: "))
+    except TimeOut: return await callback.message.reply("نفذ وقت استلام الرابط", reply_markup=backMarkup)
     if ask.text=="/cancel": return await ask.reply("- تم إلغاء العمليه", reply_to_message_id=ask.id)
-    # نفس منطق الكود الثاني: اضافة سوبر، وبعدين الانضمام مثل الكود الاول
-    create_task(add_group_logic(ask, callback.data))
+    asyncio.create_task(add_group_logic(ask, callback.data))
 
 async def add_group_logic(message, chosen):
     uid=message.from_user.id; link=message.text.strip()
@@ -426,7 +425,6 @@ async def leaveGrp(_: Client, callback: CallbackQuery):
     for a in accs:
         try:
             client=await get_user_client(a)
-            # ايقاف النشر لهاي المجموعة
             stop_post(uid,a,grp_id)
             await client.leave_chat(int(grp_id)); ok+=1
         except: fail+=1
@@ -438,7 +436,6 @@ async def delOnly(_: Client, callback: CallbackQuery):
     grp_id=callback.data.replace("delOnly_",""); db["groups"].pop(grp_id,None); save()
     await callback.message.edit_text("تم حذف من البوت فقط ✅", reply_markup=backMarkup)
 
-# ===== النشر - ببرمجة الكود الثاني + كل خواص الكود الاول =====
 @app.on_callback_query(filters.regex(r"^(posting)$"))
 async def postingMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -457,8 +454,8 @@ async def setCaption(_: Client, callback: CallbackQuery):
 async def captionSingle(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=uid, chat_id=uid, text="📝 دز الكليشة الوحدة:\nمثال: اهلا بكم 🔥", reply_markup=ForceReply(selective=True), timeout=120)
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى الوقت.")
+    try: ask=await wait_input(uid, "📝 دز الكليشة الوحدة:\nمثال: اهلا بكم 🔥", timeout=120, reply_markup=ForceReply(selective=True))
+    except TimeOut: return await callback.message.reply("- انتهى الوقت.")
     s=get_settings(uid); s["caption"]=ask.text; s["captions"]=[ask.text]; s["caption_mode"]="single"; save()
     await ask.reply(f"✅ تم حفظ كليشة وحدة:\n{ask.text}\n\nهسه النشر راح يكون بنفس الكليشة دائماً", reply_to_message_id=ask.id, reply_markup=toHomeMarkup)
 
@@ -466,8 +463,8 @@ async def captionSingle(_: Client, callback: CallbackQuery):
 async def captionMulti(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=uid, chat_id=uid, text="📝 دز عدة كلايش، كل كليشة بسطر:\n\nمثال:\nاهلا بكم 🔥\nعرض اليوم خصم 50%\nتوصيل لكل المحافظات 🚀\n\nالبوت كل نشرة راح يختار وحدة عشوائياً", reply_markup=ForceReply(selective=True), timeout=120)
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى الوقت.")
+    try: ask=await wait_input(uid, "📝 دز عدة كلايش، كل كليشة بسطر:\n\nمثال:\nاهلا بكم 🔥\nعرض اليوم خصم 50%\nتوصيل لكل المحافظات 🚀\n\nالبوت كل نشرة راح يختار وحدة عشوائياً", timeout=120, reply_markup=ForceReply(selective=True))
+    except TimeOut: return await callback.message.reply("- انتهى الوقت.")
     lines=[l.strip() for l in (ask.text or "").split("\n") if l.strip()]
     if len(lines)<2: return await ask.reply("⚠️ لازم تدز كليشتين على الاقل، كل وحدة بسطر", reply_to_message_id=ask.id)
     s=get_settings(uid); s["captions"]=lines; s["caption"]=lines[0]; s["caption_mode"]="multi"; save()
@@ -484,17 +481,15 @@ async def captionShow(_: Client, callback: CallbackQuery):
 async def setDelay(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id; s=get_settings(uid)
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=uid, chat_id=uid, text="ارسل المدة بالثواني." if not s["random_enabled"] else "ارسل هكذا: 60-120", reply_markup=ForceReply(selective=True), timeout=60)
-    except exceptions.TimeOut: return await callback.message.reply("- انتهى الوقت.")
+    try: ask=await wait_input(uid, "ارسل المدة بالثواني." if not s["random_enabled"] else "ارسل هكذا: 60-120", timeout=60, reply_markup=ForceReply(selective=True))
+    except TimeOut: return await callback.message.reply("- انتهى الوقت.")
     if s["random_enabled"]:
         try: a,b=ask.text.split("-"); s["delay_min"]=int(a); s["delay_max"]=int(b); save(); await ask.reply(f"تم: {a}-{b} 🎲", reply_markup=toHomeMarkup)
         except: await ask.reply("ارسل 60-120")
     else:
         try:
             d=int(ask.text)
-            if d<60:
-                s["delay"]=30; save(); await ask.reply("تم 30 ثانية ⚠️", reply_markup=toHomeMarkup)
-            else: s["delay"]=d; save(); await ask.reply(f"تم: {d} ثانية ✅", reply_markup=toHomeMarkup)
+            s["delay"]=d if d>=60 else 30; save(); await ask.reply(f"تم: {s['delay']} ثانية ✅", reply_markup=toHomeMarkup)
         except: await ask.reply("ارسل رقم")
 
 @app.on_callback_query(filters.regex(r"^(autoSettings)$"))
@@ -510,8 +505,8 @@ async def toggleSetting(_: Client, callback: CallbackQuery):
     s[key]=not s[key]; save()
     if key=="media_enabled" and s[key]:
         await callback.message.delete()
-        try: ask=await listener.listen(from_id=uid, chat_id=uid, text="ارسل الصورة:", reply_markup=ForceReply(selective=True), timeout=60)
-        except exceptions.TimeOut: return await callback.message.reply("- انتهى الوقت.")
+        try: ask=await wait_input(uid, "ارسل الصورة:", timeout=60, reply_markup=ForceReply(selective=True))
+        except TimeOut: return await callback.message.reply("- انتهى الوقت.")
         if ask.photo or ask.video:
             path=f"media_{uid}.jpg"; await ask.download(path); s["media_file"]=path; s["media_type"]="photo" if ask.photo else "video"; save()
             await ask.reply("تم حفظ ✅", reply_markup=toHomeMarkup)
@@ -521,7 +516,6 @@ async def toggleSetting(_: Client, callback: CallbackQuery):
         await callback.message.edit_text(f"{'✅ تم تشغيل وضع التخفي 🥷\nهسه كل 3 نشرات، الثالثة راح تكون رد بنفس نص النشر.' if s[key] else '❌ تم اطفاء وضع التخفي'}", reply_markup=Markup([[Button("- العوده -", callback_data="autoSettings")]])); return
     await callback.message.edit_text("تم ✅", reply_markup=Markup([[Button("- العوده -", callback_data="autoSettings")]]))
 
-# ===== ايقاف / بدء - مثل الكود الثاني، بس لكل حساب ومجموعة مثل الكود الاول =====
 @app.on_callback_query(filters.regex(r"^(stopPost)$"))
 async def stopPostMenu(_: Client, callback: CallbackQuery):
     markup=Markup([[Button("- ⏹️ عادي -", callback_data="stopPostNormal")],[Button("- ⛔ اجباري طوارئ -", callback_data="stopPostForce")],[Button("- ✅ الغاء الاجباري -", callback_data="unblockList")],[Button("- العوده -", callback_data="posting")]])
@@ -619,19 +613,14 @@ async def doPostGrp(_: Client, callback: CallbackQuery):
     rest=data.replace(f"{mode}Grp_",""); grp_id,acc_part=rest.split("__",1) if "__" in rest else (rest,"ALL")
     accs=[k for k,v in db["accounts"].items() if v["owner"]==uid] if acc_part=="ALL" else [acc_part]
     grps=list(db["groups"].keys()) if grp_id=="ALL" else [grp_id]
-    # ===== نفس منطق الكود الثاني: حلقة وحدة لكل مستخدم، مو مهام متوازية =====
     if mode=="start":
-        # نفحص الايقاف والحظر قبل البدء
         for a in accs:
             if is_force(a): return await callback.message.edit_text("⛔ موقوف اجبارياً", reply_markup=Markup([[Button(f"✅ الغاء: {db['accounts'][a].get('phone',a)}", callback_data=f"unforceAndStart_{a}")],[Button("- العوده -", callback_data="posting")]]))
         key=f"{uid}_posting"
         if key in posting_tasks: return await callback.message.edit_text("⚠️ النشر شغال اصلاً", reply_markup=backMarkup)
-        # نخزن الاختيار ونبدأ حلقة وحدة
-        db["settings"][str(uid)]["last_post_accs"]=accs
-        db["settings"][str(uid)]["last_post_groups"]=grps
-        save()
-        posting_tasks[key]=create_task(posting_loop_pyrogram(uid))
-        s=get_settings(uid); caps=s.get("captions",[s.get("caption","")])
+        s=get_settings(uid); s["last_post_accs"]=accs; s["last_post_groups"]=grps; save()
+        posting_tasks[key]=asyncio.create_task(posting_loop_pyrogram(uid))
+        caps=s.get("captions",[s.get("caption","")])
         await callback.message.edit_text(f"✅ بدء النشر 🔁\nالوضع: {'عدة كلايش ('+str(len(caps))+') 🎲' if s.get('caption_mode')=='multi' else 'كليشة وحدة 📝'}\nالكليشة: {s.get('caption','')[:100]}", reply_markup=backMarkup)
     else:
         key=f"{uid}_posting"
@@ -639,10 +628,8 @@ async def doPostGrp(_: Client, callback: CallbackQuery):
         else: await callback.message.edit_text("⚠️ متوقف اصلاً", reply_markup=backMarkup)
 
 def stop_post(uid,acc_key,grp_id):
-    # للتوافق مع الكود الاول - نوقف الحلقة الكاملة اذا كانت تشمل هالمجموعة
     key=f"{uid}_posting"
     if key in posting_tasks:
-        # اذا كان النشر لحساب ومجموعة وحدة فقط، نوقفه
         s=get_settings(uid)
         if s.get("last_post_accs")==[acc_key] and s.get("last_post_groups")==[grp_id]:
             posting_tasks[key].cancel(); del posting_tasks[key]; return True
@@ -652,29 +639,23 @@ def stop_all_acc(uid,acc_key):
     if key in posting_tasks: posting_tasks[key].cancel(); del posting_tasks[key]; return 1
     return 0
 
-# ===== النشر Pyrogram - نفس posting() مال الكود الثاني =====
 async def posting_loop_pyrogram(uid):
-    s=get_settings(uid)
     while True:
         try:
+            s=get_settings(uid)
             accs=s.get("last_post_accs",[k for k,v in db["accounts"].items() if v["owner"]==uid])
             grps=s.get("last_post_groups",list(db["groups"].keys()))
-            # نعيد قراءة الاعدادات كل دورة مثل الكود الثاني
             s=get_settings(uid)
             for acc_key in accs:
                 if is_force(acc_key): continue
                 for grp_id in grps:
                     if is_blocked(acc_key,grp_id): continue
-                    ok=await send_one_pyrogram(uid,acc_key,grp_id)
-                    if not ok and s.get("protect_enabled"):
-                        # اذا انحظر او انطرد، نكمل للكروب اللي بعده مثل الكود الثاني
-                        pass
-                    # انتظار صغير بين كل سوبر وسوبر - مثل الكود الثاني + حماية
-                    await sleep(random.randint(5,15))
+                    await send_one_pyrogram(uid,acc_key,grp_id)
+                    await asyncio.sleep(random.randint(5,15))
             delay=random.randint(s["delay_min"],s["delay_max"]) if s["random_enabled"] else s["delay"]
-            await sleep(delay)
+            await asyncio.sleep(delay)
         except asyncio.CancelledError: break
-        except Exception as e: print(e); await sleep(10)
+        except Exception as e: print(e); await asyncio.sleep(10)
 
 async def send_one_pyrogram(uid,acc_key,grp_id):
     s=get_settings(uid); acc=db["accounts"].get(acc_key)
@@ -713,7 +694,7 @@ async def send_one_pyrogram(uid,acc_key,grp_id):
         stats_today["count"]+=1; return True
     except FloodWait as e:
         if s["protect_enabled"]: await app.send_message(owner, f"🛡️ FloodWait {e.value} للحساب {acc_key}")
-        await sleep(e.value+5); return False
+        await asyncio.sleep(e.value+5); return False
     except (UserDeactivated, AuthKeyUnregistered, SessionRevoked) as e:
         acc["status"]="معطل"; acc["reason"]=str(e); save()
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ حساب {acc_key} تعطل: {e}")
@@ -722,7 +703,7 @@ async def send_one_pyrogram(uid,acc_key,grp_id):
         msg=str(e)
         if any(x in msg for x in ["USER_NOT_PARTICIPANT","UserNotParticipant","CHAT_WRITE_FORBIDDEN","ChatWriteForbidden","USER_KICKED","kicked","not participant","PEER_ID_INVALID"]) or "403" in msg or "banned from sending" in msg.lower() or "USER_BANNED" in msg:
             if "banned from sending" in msg.lower() or "USER_BANNED" in msg:
-                await app.send_message(uid, f"⏳ حسابك انحظر مؤقتاً من الـ API (تقدر تراسل بيدك عادي)\nالبوت راح يوقف 4 ساعات حتى لا يتحول لحظر دائم")
+                await app.send_message(uid, f"⏳ حسابك انحظر مؤقتاً من الـ API\nالبوت راح يوقف حتى لا يتحول لحظر دائم")
                 force_acc(acc_key); return False
             force_block(uid,acc_key,grp_id,f"انطرد: {e}")
             try:
@@ -734,7 +715,6 @@ async def send_one_pyrogram(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن - نفس الكود الثاني admin + كل خواص الكود الاول =====
 async def Owner(_, __: Client, message: Message): return (message.from_user.id==owner)
 isOwner = filters.create(Owner)
 adminMarkup = Markup([[Button("- الغاء VIP -", callback_data="cancelVIP"), Button("- تفعيل VIP -", callback_data="addVIP")],[Button("- الاحصائيات -", callback_data="statics"), Button("- قنوات الإشتراك -", callback_data="channels")]])
@@ -760,8 +740,8 @@ async def vipAdmin(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(vipAdd)$") & isOwner)
 async def vipAdd(_: Client, callback: CallbackQuery):
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=callback.from_user.id, chat_id=callback.from_user.id, text="- ارسل ايدي المستخدم ليتم تفعيل VIP له", reply_markup=ForceReply(selective=True, placeholder="- user id: "), timeout=30)
-    except exceptions.TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.")
+    try: ask=await wait_input(callback.from_user.id, "- ارسل ايدي المستخدم ليتم تفعيل VIP له", timeout=30, reply_markup=ForceReply(selective=True, placeholder="- user id: "))
+    except TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.")
     try: await app.get_users(int(ask.text))
     except: return await ask.reply("- لم يتم ايجاد هذا المستخدم.")
     _id=int(ask.text)
@@ -772,12 +752,128 @@ async def vipAdd(_: Client, callback: CallbackQuery):
 async def vipDur(_: Client, callback: CallbackQuery):
     p=callback.data.split("_",3); dur=p[2]; target=p[3]
     if dur=="lifetime": exp="lifetime"
-    else: exp=(datetime.now()+timedelta(days={"day":1,"week":7,"month":30}[dur])).isoformat()
+    else: exp=(dt.now()+timedelta(days={"day":1,"week":7,"month":30}[dur])).isoformat()
     db["vip"][target]={"expire":exp,"notified":False}; save()
     await callback.message.edit_text(f"تم تفعيل VIP {target} ✅", reply_markup=Markup([[Button("- العوده -", callback_data="toAdmin")]]))
 
 @app.on_callback_query(filters.regex(r"^(vipDel)$") & isOwner)
 async def vipDel(_: Client, callback: CallbackQuery):
     await callback.message.delete()
-    try: ask=await listener.listen(from_id=callback.from_user.id, chat_id=callback.from_user.id, text="- ارسل ايدي المستخدم ليتم الغاء VIP الخاص به", reply_markup=ForceReply(selective=True, placeholder="- user id: "), timeout=30)
-    except exceptions.TimeOut: return await callback.mess
+    try: ask=await wait_input(callback.from_user.id, "- ارسل ايدي المستخدم ليتم الغاء VIP الخاص به", timeout=30, reply_markup=ForceReply(selective=True, placeholder="- user id: "))
+    except TimeOut: return await callback.message.reply("- نفذ وقت استلام ايدي المستخدم.")
+    db["vip"].pop(ask.text,None); save()
+    await ask.reply("- تم الغاء اشتراك هذا المستخدم.", reply_markup=Markup([[Button("- الصفحه الرئيسيه -", callback_data="toAdmin")]]))
+
+@app.on_callback_query(filters.regex(r"^(vipList)$") & isOwner)
+async def vipList(_: Client, callback: CallbackQuery):
+    txt="📋 VIP:\n\n"
+    for k,v in db["vip"].items(): txt+=f"{k} - {vip_left(int(k)) if k.isdigit() else v}\n"
+    if not db["vip"]: txt+="لا يوجد"
+    await callback.message.edit_text(txt, reply_markup=Markup([[Button("- العوده -", callback_data="toAdmin")]]))
+
+@app.on_callback_query(filters.regex(r"^(vipForced)$") & isOwner)
+async def vipForced(_: Client, callback: CallbackQuery):
+    cur=get_forced() or "مو مفعل"; ct="خاصة" if str(cur).startswith("-100") else ("عامة" if cur!="مو مفعل" else "")
+    await callback.message.delete()
+    try: ask=await wait_input(callback.from_user.id, f"📢 القناة الحالية:\n{cur} {ct}\n\nاذا تريد تغيرها، دز رابط جديد\nاو ارسل 'الغاء' للتعطيل\n⚠️ البوت لازم ادمن", timeout=60, reply_markup=ForceReply(selective=True, placeholder="- channel: "))
+    except TimeOut: return await callback.message.reply("- نفذ الوقت.")
+    txt=ask.text.strip()
+    if txt.lower() in ["الغاء","cancel","none","-","ايقاف","تعطيل"]:
+        s=get_settings(owner); s["forced_channel"]=None; save(); return await ask.reply("تم تعطيل الاجباري ✅", reply_markup=Markup([[Button("- العوده -", callback_data="toAdmin")]]))
+    cleaned=txt.replace("https://","").replace("http://","").replace("t.me/","").replace("telegram.me/","").replace("@","").split("/")[0].split("?")[0].strip()
+    if not cleaned: return await ask.reply("دز رابط عامة")
+    s=get_settings(owner); s["forced_channel"]="@"+cleaned; save()
+    await ask.reply(f"تم ✅ اجباري = @{cleaned}\nعامة 🌐", reply_markup=Markup([[Button("- العوده -", callback_data="toAdmin")]]))
+
+@app.on_callback_query(filters.regex(r"^(channels)$") & isOwner)
+async def channelsControl(_: Client, callback: CallbackQuery):
+    await vipForced(_, callback)
+@app.on_callback_query(filters.regex(r"^(cancelVIP)$") & isOwner)
+async def cancelVIP(_: Client, callback: CallbackQuery):
+    await vipDel(_, callback)
+@app.on_callback_query(filters.regex(r"^(addVIP)$") & isOwner)
+async def addVIP(_: Client, callback: CallbackQuery):
+    await vipAdd(_, callback)
+
+@app.on_callback_query(filters.regex(r"^(checkMyVip)$"))
+async def checkMyVip(_: Client, callback: CallbackQuery):
+    uid=callback.from_user.id
+    if is_vip(uid): await callback.message.edit_text(f"VIP ✅\n{vip_left(uid)}", reply_markup=backMarkup)
+    else: await callback.message.edit_text(f"عادي ❌\nراسل: {DEV}", reply_markup=Markup([[Button("📩 راسل", url=f"https://t.me/{DEV.replace('@','')}")]]))
+
+@app.on_callback_query(filters.regex(r"^(checkAcc)$"))
+async def checkAcc(_: Client, callback: CallbackQuery):
+    uid=callback.from_user.id
+    txt="🔍 فحص:\n\n"
+    for k,v in db["accounts"].items():
+        if v["owner"]!=uid and not is_admin(uid): continue
+        running=f"{uid}_posting" in posting_tasks
+        txt+=f"{v.get('phone',k)} - {'شغال ✅' if running else 'متوقف ⏹️'}{' ⛔ ايقاف' if is_force(k) else ''}\n"
+    await callback.message.edit_text(txt, reply_markup=backMarkup)
+
+@app.on_callback_query(filters.regex(r"^(noop)$"))
+async def noopCb(_: Client, callback: CallbackQuery):
+    await callback.answer(" ", show_alert=False)
+
+async def vipCanceler(user_id):
+    await asyncio.sleep(60)
+    while True:
+        if str(user_id) not in db["vip"]: break
+        v=db["vip"].get(str(user_id))
+        if not v: break
+        if v.get("expire")=="lifetime": break
+        try:
+            exp=dt.fromisoformat(v["expire"])
+            if dt.now()>exp: break
+        except: break
+        await asyncio.sleep(20)
+    if str(user_id) in db["vip"]:
+        del db["vip"][str(user_id)]; save()
+        try: await app.send_message(user_id, "- انتهى اشتراك VIP الخاص بك.\n- راسل المطور اذا كنت تريد تجديد اشتراكك.")
+        except: pass
+
+async def vip_checker():
+    while True:
+        now=dt.now()
+        for uid,v in list(db["vip"].items()):
+            if v.get("expire")=="lifetime": continue
+            try:
+                exp=dt.fromisoformat(v["expire"])
+                if (exp-now).total_seconds()<=86400 and not v.get("notified"):
+                    v["notified"]=True; save()
+                    try: await app.send_message(int(uid),"⚠️ اشتراكك VIP راح يخلص باجر!")
+                    except: pass
+                if now>exp:
+                    del db["vip"][uid]; save()
+                    try: await app.send_message(int(uid),"❌ انتهى اشتراكك VIP")
+                    except: pass
+            except: pass
+        await asyncio.sleep(3600)
+
+async def daily_report():
+    while True:
+        now=dt.now(); target=now.replace(hour=23,minute=59,second=0)
+        if target<now: target+=timedelta(days=1)
+        await asyncio.sleep((target-now).total_seconds())
+        for uid,s in list(db["settings"].items()):
+            if s.get("report_enabled"):
+                try: await app.send_message(int(uid), f"📊 تقرير يومي\nنشرت اليوم: {stats_today['count']}")
+                except: pass
+        stats_today["count"]=0
+
+async def reStartPosting():
+    await asyncio.sleep(30)
+    for uid in list(db["settings"].keys()):
+        s=db["settings"][uid]
+        if s.get("last_post_accs") and s.get("last_post_groups"):
+            key=f"{uid}_posting"
+            if key not in posting_tasks: posting_tasks[key]=asyncio.create_task(posting_loop_pyrogram(int(uid)))
+async def reVipTime():
+    for user in list(db["vip"].keys()):
+        if int(user)==owner: continue
+        asyncio.create_task(vipCanceler(int(user)))
+async def main():
+    asyncio.create_task(reStartPosting()); asyncio.create_task(reVipTime()); asyncio.create_task(vip_checker()); asyncio.create_task(daily_report())
+    await app.start(); await idle()
+if __name__=="__main__":
+    loop.run_until_complete(main())
