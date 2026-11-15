@@ -1,4 +1,22 @@
-import asyncio, json, os, random, datetime, logging
+import asyncio, json, os, random, datetime, logging, sys, types
+
+############################################
+# ترقيع (shim) لوحدة imghdr المحذوفة من بايثون 3.13+
+# pyrogram يحتاجها بالخلفية، وبدون هذا الترقيع الكود يطيح فوراً
+# بخطأ ModuleNotFoundError قبل لا يوصل لأي طباعة أو تشغيل فعلي.
+############################################
+if "imghdr" not in sys.modules:
+    try:
+        import imghdr  # noqa: F401  (موجودة فعلاً - ما نحتاج الترقيع)
+    except ModuleNotFoundError:
+        _imghdr_shim = types.ModuleType("imghdr")
+
+        def _what(file, h=None):
+            return None
+
+        _imghdr_shim.what = _what
+        sys.modules["imghdr"] = _imghdr_shim
+
 from pyrogram import Client, filters, idle
 from pyrogram.types import (
     Message,
@@ -831,14 +849,4 @@ async def on_msg(_: Client, e: Message):
             sess = await tmp["client"].export_session_string(); key = f"acc_{int(datetime.datetime.now().timestamp())}_{random.randint(100, 999)}"
             db["accounts"][key] = {"owner": uid, "session": sess, "phone": tmp["phone"], "status": "🟢 موجود", "reason": "-"}; save(); account_clients[key] = tmp["client"]
             login_tmp.pop(uid, None); user_state.pop(uid, None)
-            kb_ = [[IButton("✅ اي نعم", callback_data="join_prompt_" + key)], [IButton("❌ لا، بعدين", callback_data="main")]]
-            await e.reply(f"تم ✅ {tmp['phone']}\n\nهل تريد انضمام الحساب للمجموعات؟", reply_markup=kb(kb_))
-        except Exception as ex: await e.reply(f"غلط: {ex}")
-        return
-    if st.startswith("wait_grp_"):
-        link = txt.strip(); chosen = st.replace("wait_grp_", "")
-        if chosen.startswith("add_grp_acc_"):
-            ak = chosen.replace("add_grp_acc_", "")
-            if ak in db["accounts"] and db["accounts"][ak]["owner"] == uid: accs = [(ak, db["accounts"][ak])]
-            else: await e.reply("الحساب مو موجود"); user_state.pop(uid, None); return
-            mode_t
+            kb_ = [[IButton("✅ اي نعم", callback_data="join_prompt_" + key)], [IButton("❌ لا، بعدين", ca
