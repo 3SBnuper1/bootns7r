@@ -1,4 +1,4 @@
-# main.py - اصلاح الايقاف الاجباري - يرجع يشتغل بعد الالغاء
+# main.py - الاشتراك الاجباري للقناة العامة والخاصة
 import asyncio, json, os, random, datetime, logging
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
@@ -21,7 +21,6 @@ def load():
         d = json.load(f)
     if "blocked" not in d: d["blocked"] = {}
     if "force_stopped" not in d: d["force_stopped"] = []
-    # تنظيف قديم: اذا اكو ALL عالق من النسخة القديمة، نمسحه لان هو سبب المشكلة
     if "ALL" in d["force_stopped"]:
         d["force_stopped"].remove("ALL")
     return d
@@ -33,6 +32,21 @@ if "force_stopped" not in db: db["force_stopped"] = []
 if "ALL" in db["force_stopped"]:
     db["force_stopped"].remove("ALL"); save()
 
+def clean_channel(raw):
+    if not raw: return None
+    t = raw.strip()
+    if t.lower() in ["الغاء","الغاء","cancel","none","-"]:
+        return None
+    # اذا ايدي رقمي -100... مال قناة خاصة
+    if t.startswith("-100") and t[1:].isdigit():
+        return t
+    t = t.replace("https://","").replace("http://","").replace("t.me/","").replace("telegram.me/","").replace("@","").split("/")[0].split("?")[0].strip()
+    if not t: return None
+    # اذا الرابط كان +xxx مال دعوة خاصة، ما ينفع للفحص، لازم تحويل رسالة
+    if t.startswith("+") or "joinchat" in t:
+        return "NEED_FORWARD"
+    return "@" + t
+
 def get_settings(uid):
     uid=str(uid)
     if uid not in db["settings"]:
@@ -43,7 +57,13 @@ def get_settings(uid):
     return db["settings"][uid]
 def get_forced_channel():
     s = db["settings"].get(str(ADMIN_ID), {})
-    return s.get("forced_channel")
+    ch = s.get("forced_channel")
+    if not ch: return None
+    if ch == "NEED_FORWARD": return "NEED_FORWARD"
+    # اذا ايدي رقمي رجعه مثل ما هو
+    if str(ch).startswith("-100"):
+        return str(ch)
+    return clean_channel(ch)
 def is_admin(uid): return uid==ADMIN_ID
 def is_vip(uid):
     if is_admin(uid): return True
@@ -64,9 +84,7 @@ def vip_left(uid):
     left=exp-datetime.datetime.now()
     return f"{left.days} يوم - ينتهي {exp.strftime('%Y-%m-%d %H:%M')}"
 
-# --- الايقاف الاجباري - طوارئ ---
 def is_account_force_stopped(acc_key):
-    # فقط اذا اسم الحساب نفسه موجود بالقائمة - ماكو ALL بعد
     return acc_key in db.get("force_stopped", [])
 def force_stop_account(acc_key):
     if acc_key not in db["force_stopped"]:
@@ -110,7 +128,6 @@ async def get_account_client(acc_key):
     client = TelegramClient(StringSession(acc["session"]), API_ID, API_HASH)
     await client.connect()
     account_clients[acc_key] = client
-    print(f"✅ جلسة الحساب {acc.get('phone')} بقت نشطة")
     return client
 
 async def resolve_group_id(client, grp_id_or_link):
@@ -162,24 +179,41 @@ async def leave_group_real(client, grp_id):
         print(f"فشل المغادرة get_entity: {e}")
         return False
 
+# --- الاشتراك الاجباري - عامة وخاصة ---
 async def check_forced(uid):
     ch = get_forced_channel()
-    if not ch: return True
+    if not ch or ch == "NEED_FORWARD": return True
     if is_admin(uid): return True
+    # نحول الايدي الرقمي لرقم، واليوزر يبقى نص
+    target = int(ch) if str(ch).startswith("-100") else ch
     try:
-        await bot.get_participant(ch, uid)
+        await bot.get_participant(target, uid)
         return True
     except UserNotParticipantError:
+        print(f"❌ مستخدم {uid} مو مشترك بالقناة {ch}")
         return False
-    except Exception:
-        return True
+    except Exception as e:
+        msg = str(e)
+        print(f"⚠️ فشل فحص الاشتراك {ch} للمستخدم {uid}: {e}")
+        if "CHANNEL_PRIVATE" in msg or "CHAT_ADMIN_REQUIRED" in msg or "CHANNEL_INVALID" in msg or "USERNAME_NOT_OCCUPIED" in msg or "UsernameNotOccupied" in msg or "CHAT_ID_INVALID" in msg:
+            try:
+                await bot.send_message(ADMIN_ID, f"⚠️ مشكلة بالاشتراك الاجباري\n\nالقناة: {ch}\nالخطأ: {e}\n\nتأكد ان:\n1. البوت داخل بالقناة\n2. البوت ادمن بالقناة\n3. القناة مو محذوفة")
+            except: pass
+            return False
+        return False
 
 async def check_vip_gate(e, uid):
     if is_admin(uid): return True
     if not await check_forced(uid):
         ch = get_forced_channel()
-        await e.respond(f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة اولاً حتى تستخدم البوت:\n{ch}\n\nبعد ما تشترك دوس /start",
-        buttons=[[Button.url("📢 اشترك بالقناة", f"https://t.me/{ch.replace('@','')}")], [Button.inline("✅ تحققت من الاشتراك","check_forced")]])
+        # اذا قناة خاصة، ما نكدر نعطي رابط عام، نطلب منه يشترك من الرابط الخاص اللي انت تنطيه ياه
+        if str(ch).startswith("-100"):
+            txt_forced = f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة الخاصة اولاً حتى تستخدم البوت.\n\nاذا ما عندك رابط القناة، راسل المطور حتى ينطيك رابط الدعوة:\n{DEVELOPER}\n\nبعد ما تشترك دوس تحققت"
+            btns = [[Button.url("📩 راسل المطور", f"https://t.me/{DEVELOPER.replace('@','')}")],[Button.inline("✅ تحققت من الاشتراك","check_forced")]]
+        else:
+            txt_forced = f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة اولاً حتى تستخدم البوت:\n{ch}\n\nبعد ما تشترك دوس تحققت"
+            btns = [[Button.url("📢 اشترك بالقناة", f"https://t.me/{str(ch).replace('@','')}")],[Button.inline("✅ تحققت من الاشتراك","check_forced")]]
+        await e.respond(txt_forced, buttons=btns)
         return False
     if not is_vip(uid):
         await e.respond(f"❌ انت غير مشترك VIP\n\nهذا البوت للمشتركين فقط.\n\nراسل المطور للتفعيل:\n{DEVELOPER}\n\nبعد التفعيل دز /start",
@@ -187,15 +221,20 @@ async def check_vip_gate(e, uid):
         return False
     return True
 
+def forced_join_buttons():
+    ch = get_forced_channel()
+    if str(ch).startswith("-100"):
+        return [[Button.url("📩 راسل المطور لاخذ رابط القناة", f"https://t.me/{DEVELOPER.replace('@','')}")],[Button.inline("✅ تحققت من الاشتراك","check_forced")]]
+    else:
+        return [[Button.url("📢 اشترك بالقناة", f"https://t.me/{str(ch).replace('@','')}")],[Button.inline("✅ تحققت من الاشتراك","check_forced")]]
+
 async def send_one(uid, acc_key, grp_id):
     s=get_settings(uid)
     acc=db["accounts"].get(acc_key)
     if not acc: return False
     if is_account_force_stopped(acc_key):
-        print(f"⛔ ايقاف اجباري طوارئ: {acc_key}")
         return False
     if is_blocked(acc_key, grp_id):
-        print(f"⛔ محظور: {acc_key} -> {grp_id}")
         return False
     try:
         client = await get_account_client(acc_key)
@@ -215,7 +254,6 @@ async def send_one(uid, acc_key, grp_id):
         else:
             await client.send_message(int(real_id), s["caption"])
         stats_today["count"]+=1
-        print(f"✅ نشر: حساب {acc.get('phone')} -> كروب {real_id}")
         return True
     except FloodWaitError as e:
         if s["protect_enabled"]:
@@ -234,9 +272,8 @@ async def send_one(uid, acc_key, grp_id):
             stop_post(uid, acc_key, grp_id)
             try:
                 grp_title = db["groups"].get(str(grp_id), {}).get("title", grp_id)
-                await bot.send_message(uid, f"⛔ كشف طرد تلقائي\n\nالحساب {acc.get('phone')} انطرد من المجموعة:\n{grp_title}\n\nتم ايقاف النشر لهاي المجموعة فقط تلقائياً.\nباقي المجموعات شغالة طبيعي.")
+                await bot.send_message(uid, f"⛔ كشف طرد تلقائي\n\nالحساب {acc.get('phone')} انطرد من المجموعة:\n{grp_title}\n\nتم ايقاف النشر لهاي المجموعة فقط تلقائياً.")
             except: pass
-            print(f"⛔ انطرد: {acc_key} -> {grp_id}")
             return False
         print(f"خطأ نشر {acc_key} -> {grp_id}: {e}")
         if s["protect_enabled"]:
@@ -245,20 +282,16 @@ async def send_one(uid, acc_key, grp_id):
 
 async def posting_loop(uid, acc_key, grp_id):
     s=get_settings(uid)
-    print(f"▶️ بدأ النشر المستمر: {acc_key} -> {grp_id}")
     while True:
         try:
             if is_account_force_stopped(acc_key):
-                print(f"⛔ ايقاف اجباري طوارئ، توقف: {acc_key}")
                 break
             if is_blocked(acc_key, grp_id):
-                print(f"⛔ محظور انطرد، توقف: {acc_key} -> {grp_id}")
                 break
             await send_one(uid, acc_key, grp_id)
             delay=random.randint(s["delay_min"], s["delay_max"]) if s["random_enabled"] else s["delay"]
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
-            print(f"⏹️ توقف النشر: {acc_key} -> {grp_id}")
             break
         except Exception as e:
             print(f"خطأ باللوب: {e}")
@@ -339,8 +372,20 @@ async def cb(e):
                 return
             await e.edit("🤖 بوت النشر التلقائي\nاهلا بك في لوحة التحكم", buttons=main_kb(uid))
         else:
-            await e.answer("ما اشتركت بعد! اشترك اولاً", alert=True)
+            ch = get_forced_channel()
+            if str(ch).startswith("-100"):
+                await e.edit(f"⚠️ ما اشتركت بعد!\n\nالقناة خاصة، لازم تشترك برابط الدعوة اللي ينطيك ياه المطور.\nبعد ما تشترك دوس تحققت", buttons=forced_join_buttons())
+            else:
+                await e.edit(f"⚠️ ما اشتركت بعد!\n\nاشترك بالقناة اولاً:\n{ch}\n\nبعد ما تشترك دوس تحققت", buttons=forced_join_buttons())
         return
+    if not is_admin(uid):
+        if not await check_forced(uid):
+            ch = get_forced_channel()
+            if str(ch).startswith("-100"):
+                await e.edit(f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة الخاصة اولاً حتى تستخدم البوت.\nراسل المطور لاخذ رابط الدعوة:\n{DEVELOPER}", buttons=forced_join_buttons())
+            else:
+                await e.edit(f"⚠️ الاشتراك الاجباري\n\nيجب عليك الاشتراك بالقناة اولاً حتى تستخدم البوت:\n{ch}", buttons=forced_join_buttons())
+            return
     if not is_admin(uid) and not is_vip(uid):
         if data not in ["check_my_vip","main"]:
             await e.answer("❌ انت غير مشترك VIP - راسل المطور @i999l9", alert=True)
@@ -408,10 +453,10 @@ async def cb(e):
                 print(f"فشل مغادرة {a}: {ex}")
                 fail+=1
         db["groups"].pop(grp_id, None); save()
-        await e.edit(f"تم ✅\n\n🚪 غادر من الكروب: {ok} حساب\n❌ فشل: {fail} حساب\nالمجموعة: {grp_title}\nتم حذفها من البوت ايضاً.", buttons=back_kb()); return
+        await e.edit(f"تم ✅\n\n🚪 غادر من الكروب: {ok} حساب\n❌ فشل: {fail} حساب\nالمجموعة: {grp_title}", buttons=back_kb()); return
     if data.startswith("del_only_"):
         grp_id=data.replace("del_only_","")
-        db["groups"].pop(grp_id,None); save(); await e.edit("تم حذف المجموعة من البوت فقط ✅\nالحساب بقى داخل الكروب بالتليجرام.", buttons=back_kb()); return
+        db["groups"].pop(grp_id,None); save(); await e.edit("تم حذف المجموعة من البوت فقط ✅", buttons=back_kb()); return
     if data=="add_grp_choose_acc":
         accs=[k for k,v in db["accounts"].items() if v["owner"]==uid]
         if not accs: await e.edit("اضف حساب اولا", buttons=back_kb()); return
@@ -431,21 +476,21 @@ async def cb(e):
               [Button.inline("⛔ إيقاف إجباري - طوارئ","stop_post_force")],
               [Button.inline("✅ إلغاء الإيقاف الإجباري","unblock_list")],
               [Button.inline("🔙 رجوع","posting")]]
-        await e.edit("⏹️ إيقاف النشر\n\n⏹️ عادي: يوقف بس وتكدر ترجع تشغله\n⛔ إجباري - طوارئ: يوقف كل النشر مال الحساب نهائياً، وما يخليه يحاول ينشر بأي مجموعة، لحد ما تلغي الايقاف\n\nملاحظة: اذا الحساب انطرد من مجموعة معينة، البوت يوقفه تلقائياً لهاي المجموعة فقط.", buttons=btns); return
+        await e.edit("⏹️ إيقاف النشر", buttons=btns); return
     if data=="unblock_list":
         forced = [a for a in db.get("force_stopped", []) if a in db["accounts"] and (db["accounts"][a]["owner"]==uid or is_admin(uid))]
         blocked=[(k,v) for k,v in db.get("blocked", {}).items() if v.get("owner")==uid or is_admin(uid)]
         txt="⛔ الإيقاف الإجباري:\n\n"
         btns=[]
         if forced:
-            txt += "--- ايقاف طوارئ (كل النشر) ---\n"
+            txt += "--- ايقاف طوارئ ---\n"
             for acc_key in forced:
                 phone = db["accounts"].get(acc_key, {}).get("phone", acc_key)
                 txt += f"{phone} ⛔\n"
                 btns.append([Button.inline(f"✅ الغاء ايقاف + شغل النشر: {phone}", f"unforce_and_start_{acc_key}")])
                 btns.append([Button.inline(f"✅ الغاء ايقاف فقط: {phone}", f"unforce_{acc_key}")])
         if blocked:
-            txt += "\n--- انطرد من مجموعة معينة ---\n"
+            txt += "\n--- انطرد من مجموعة ---\n"
             for k,v in blocked:
                 acc_phone = db["accounts"].get(v.get("acc"), {}).get("phone", v.get("acc"))
                 grp_title = db["groups"].get(v.get("grp"), {}).get("title", v.get("grp"))[:20]
@@ -459,14 +504,14 @@ async def cb(e):
         acc_key=data.replace("unforce_and_start_","")
         if unforce_account(acc_key):
             phone = db["accounts"].get(acc_key, {}).get("phone", acc_key)
-            await e.edit(f"✅ تم إلغاء الإيقاف الإجباري للحساب {phone}\n\nهسه الحساب رجع طبيعي 100%.\nروح بدء النشر > اختر الحساب > اختر المجموعة، وراح يشتغل فوراً.", buttons=[[Button.inline("▶️ روح بدء النشر","start_post")],[Button.inline("🔙 رجوع","main")]])
+            await e.edit(f"✅ تم إلغاء الإيقاف الإجباري للحساب {phone}\n\nهسه الحساب رجع طبيعي.", buttons=[[Button.inline("▶️ روح بدء النشر","start_post")],[Button.inline("🔙 رجوع","main")]])
         else:
             await e.edit("مو موجود", buttons=back_kb())
         return
     if data.startswith("unforce_"):
         acc_key=data.replace("unforce_","")
         if unforce_account(acc_key):
-            await e.edit(f"✅ تم إلغاء الإيقاف الإجباري\n\nهسه الحساب رجع طبيعي، تكدر تدوس بدء النشر وراح يشتغل.", buttons=[[Button.inline("▶️ بدء النشر","start_post")],[Button.inline("🔙 رجوع","main")]])
+            await e.edit(f"✅ تم إلغاء الإيقاف الإجباري", buttons=[[Button.inline("▶️ بدء النشر","start_post")],[Button.inline("🔙 رجوع","main")]])
         else:
             await e.edit("مو موجود", buttons=back_kb())
         return
@@ -476,7 +521,7 @@ async def cb(e):
             acc_key, grp_id = rest.split("__",1)
             if block_key(acc_key, grp_id) in db.get("blocked", {}):
                 del db["blocked"][block_key(acc_key, grp_id)]; save()
-                await e.edit(f"✅ تم إلغاء حظر هاي المجموعة\n\nهسه تكدر ترجع تشغل النشر بيها.", buttons=back_kb())
+                await e.edit(f"✅ تم إلغاء حظر هاي المجموعة", buttons=back_kb())
             else:
                 await e.edit("مو موجود", buttons=back_kb())
         return
@@ -485,7 +530,6 @@ async def cb(e):
         accs=[k for k,v in db["accounts"].items() if v["owner"]==uid]
         if not accs:
             await e.edit("ما عندك حساب، ضيف حساب اولاً", buttons=back_kb()); return
-        # اذا الحساب موقوف اجباري، نعرضه مع زر الغاء مباشر
         btns=[[Button.inline("كل الحسابات",f"{mode}_post_ALL")]]
         for k in accs:
             label = db["accounts"][k].get("phone",k)
@@ -495,10 +539,7 @@ async def cb(e):
             else:
                 btns.append([Button.inline(label,f"{mode}_post_ACC_{k}")])
         btns.append([Button.inline("🔙 رجوع","posting")])
-        title = "اختر الحساب للنشر:" if mode=="start" else "اختر الحساب للإيقاف العادي:"
-        if mode=="start" and any(is_account_force_stopped(k) for k in accs):
-            title += "\n\n⚠️ حساب موقوف اجباري - دوس عليه حتى تلغي الايقاف ويرجع يشتغل"
-        await e.edit(title, buttons=btns); return
+        await e.edit("اختر الحساب للنشر:" if mode=="start" else "اختر الحساب للإيقاف العادي:", buttons=btns); return
     if data=="stop_post_force":
         accs=[k for k,v in db["accounts"].items() if v["owner"]==uid]
         if not accs:
@@ -510,29 +551,28 @@ async def cb(e):
                 label += " ⛔ موقوف اصلاً"
             btns.append([Button.inline(f"⛔ ايقاف اجباري: {label}", f"force_{k}")])
         btns.append([Button.inline("🔙 رجوع","posting")])
-        await e.edit("⛔ إيقاف إجباري - طوارئ\n\nاختر الحساب اللي تريد توقفه اجبارياً:\n\nراح يوقف كل النشر مال هذا الحساب، وما راح يحاول ينشر بأي مجموعة، لحد ما تلغي الايقاف.\nبدون اختيار مجموعة.", buttons=btns); return
+        await e.edit("⛔ إيقاف إجباري - طوارئ", buttons=btns); return
     if data.startswith("force_"):
         acc_key=data.replace("force_","")
         if acc_key=="ALL":
             for k in [kk for kk,v in db["accounts"].items() if v["owner"]==uid]:
                 stop_all_for_account(uid, k)
                 force_stop_account(k)
-            await e.edit(f"⛔ تم الإيقاف الإجباري لكل الحسابات ✅\n\nكل النشر توقف.\n\nللالغاء والرجوع للنشر: إيقاف النشر > إلغاء الإيقاف الإجباري > الغاء ايقاف + شغل النشر", buttons=[[Button.inline("✅ إلغاء الإيقاف الإجباري","unblock_list")],[Button.inline("🔙 رجوع","main")]]); return
+            await e.edit(f"⛔ تم الإيقاف الإجباري لكل الحسابات ✅", buttons=[[Button.inline("✅ إلغاء الإيقاف الإجباري","unblock_list")],[Button.inline("🔙 رجوع","main")]]); return
         else:
             cnt = stop_all_for_account(uid, acc_key)
             force_stop_account(acc_key)
             phone = db["accounts"].get(acc_key, {}).get("phone", acc_key)
-            await e.edit(f"⛔ تم الإيقاف الإجباري للحساب {phone} ✅\n\nتم ايقاف {cnt} نشر شغال.\nما راح يحاول ينشر بأي مجموعة بعد.\n\nللرجوع للنشر: إيقاف النشر > إلغاء الإيقاف الإجباري > الغاء ايقاف + شغل النشر", buttons=[[Button.inline("✅ إلغاء الإيقاف الإجباري","unblock_list")],[Button.inline("🔙 رجوع","main")]]); return
+            await e.edit(f"⛔ تم الإيقاف الإجباري للحساب {phone} ✅\n\nتم ايقاف {cnt} نشر شغال.", buttons=[[Button.inline("✅ إلغاء الإيقاف الإجباري","unblock_list")],[Button.inline("🔙 رجوع","main")]]); return
     if data.startswith("start_post_ACC_") or data.startswith("stop_post_ACC_") or data in ["start_post_ALL","stop_post_ALL"]:
         mode="start" if data.startswith("start") else "stop"
         if data.endswith("_ALL"):
             acc_part="ALL"
         else:
             acc_part=data.replace(f"{mode}_post_ACC_","")
-        # اذا الحساب موقوف اجباري وانت تحاول تشغله، نعرض زر الغاء فوراً
         if mode=="start" and acc_part!="ALL" and is_account_force_stopped(acc_part):
             phone = db["accounts"].get(acc_part, {}).get("phone", acc_part)
-            await e.edit(f"⛔ هذا الحساب {phone} موقوف اجبارياً\n\nما راح يشتغل لحد ما تلغي الايقاف.\nدوس الزر حتى يرجع يشتغل فوراً:", buttons=[[Button.inline("✅ الغاء الايقاف + شغل النشر", f"unforce_and_start_{acc_part}")],[Button.inline("🔙 رجوع","posting")]]); return
+            await e.edit(f"⛔ هذا الحساب {phone} موقوف اجبارياً", buttons=[[Button.inline("✅ الغاء الايقاف + شغل النشر", f"unforce_and_start_{acc_part}")],[Button.inline("🔙 رجوع","posting")]]); return
         grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid]
         if not grps:
             await e.edit("ما عندك مجموعة، ضيف مجموعة اولاً", buttons=back_kb()); return
@@ -544,8 +584,7 @@ async def cb(e):
                 suffix = " ⛔ انطرد"
             btns.append([Button.inline(label+suffix, f"{mode}_GRP_{k}__{acc_part}")])
         btns.append([Button.inline("🔙 رجوع","posting")])
-        title = "اختر المجموعة للنشر:" if mode=="start" else "اختر المجموعة للإيقاف العادي:"
-        await e.edit(title, buttons=btns); return
+        await e.edit("اختر المجموعة للنشر:" if mode=="start" else "اختر المجموعة للإيقاف العادي:", buttons=btns); return
     if data.startswith("start_GRP_") or data.startswith("stop_GRP_"):
         mode="start" if data.startswith("start") else "stop"
         rest=data.replace(f"{mode}_GRP_","")
@@ -578,18 +617,17 @@ async def cb(e):
                     else: already+=1
         if mode=="start":
             if force_cnt>0 and cnt==0:
-                # كلها موقوفة اجبارياً - نعرض زر الغاء مباشر
                 btns=[]
                 for fa in force_accs:
                     phone = db["accounts"].get(fa, {}).get("phone", fa)
                     btns.append([Button.inline(f"✅ الغاء الايقاف + شغل النشر: {phone}", f"unforce_and_start_{fa}")])
                 btns.append([Button.inline("🔙 رجوع","posting")])
-                await e.edit(f"⛔ الحساب موقوف اجبارياً\n\nما راح يشتغل لحد ما تلغي الايقاف.\nدوس الزر حتى يرجع يشتغل فوراً:", buttons=btns); return
+                await e.edit(f"⛔ الحساب موقوف اجبارياً", buttons=btns); return
             msg = ""
-            if cnt>0: msg += f"✅ تم بدء النشر المستمر لـ {cnt} 🔁\n\nالنشر راح يبقى مستمر كل {s['delay']} ثانية لحد ما توقفه انت.\n\nالكليشة: {s['caption'][:100]}\n"
+            if cnt>0: msg += f"✅ تم بدء النشر المستمر لـ {cnt} 🔁\n\nالنشر راح يبقى مستمر كل {s['delay']} ثانية.\n\nالكليشة: {s['caption'][:100]}\n"
             if already>0: msg += f"\n⚠️ النشر شغال اصلاً لـ {already}\n"
-            if blocked_cnt>0: msg += f"\n⛔ {blocked_cnt} انطرد من المجموعة - ما راح ينشر بيها."
-            if force_cnt>0: msg += f"\n⛔ {force_cnt} موقوف اجبارياً طوارئ - الغي الايقاف اولاً."
+            if blocked_cnt>0: msg += f"\n⛔ {blocked_cnt} انطرد من المجموعة."
+            if force_cnt>0: msg += f"\n⛔ {force_cnt} موقوف اجبارياً."
             await e.edit(msg or "تم", buttons=back_kb())
         else:
             if cnt>0:
@@ -603,7 +641,7 @@ async def cb(e):
         if s["random_enabled"]:
             user_state[uid]="wait_delay_random"; await e.edit("النشر العشوائي مفعل 🎲\nارسل المدة هكذا: 60-120", buttons=back_kb())
         else:
-            user_state[uid]="wait_delay"; await e.edit("ارسل المدة بالثواني.\n⚠️ لا تخلي الفاصل أقل من 60 ثانية لتجنب الحظر.", buttons=back_kb())
+            user_state[uid]="wait_delay"; await e.edit("ارسل المدة بالثواني.", buttons=back_kb())
         return
     if data=="auto_settings":
         def t(v): return "✅ مفعل" if v else "❌ معطل"
@@ -624,7 +662,9 @@ async def cb(e):
         active=len(posting_tasks)
         blocked_n=len(db.get("blocked",{}))
         forced_n=len(db.get("force_stopped",[]))
-        await e.edit(f"📊 الإحصائيات\n\nعدد المستخدمين: {len(db['users'])}\nعدد الحسابات: {len(db['accounts'])}\nعدد المجموعات: {len(db['groups'])}\nنشر شغال حالياً: {active}\nنشرت اليوم: {stats_today['count']}\nانطرد: {blocked_n}\nايقاف اجباري طوارئ: {forced_n}", buttons=back_kb()); return
+        forced_ch = get_forced_channel() or "مو مفعل"
+        ch_type = "خاصة (ايدي)" if str(forced_ch).startswith("-100") else ("عامة" if forced_ch!="مو مفعل" else "")
+        await e.edit(f"📊 الإحصائيات\n\nعدد المستخدمين: {len(db['users'])}\nعدد الحسابات: {len(db['accounts'])}\nعدد المجموعات: {len(db['groups'])}\nنشر شغال حالياً: {active}\nنشرت اليوم: {stats_today['count']}\nانطرد: {blocked_n}\nايقاف اجباري طوارئ: {forced_n}\n📢 الاشتراك الاجباري: {forced_ch} {ch_type}", buttons=back_kb()); return
     if data=="vip_admin":
         if not is_admin(uid): await e.edit("للادمن فقط", buttons=back_kb()); return
         btns=[[Button.inline("➕ تفعيل VIP لمستخدم","vip_add")],[Button.inline("➖ إلغاء VIP","vip_del")],[Button.inline("📋 قائمة الـ VIP","vip_list")],[Button.inline("📢 الاشتراك الإجباري","vip_forced")],[Button.inline("🔙 رجوع","main")]]
@@ -637,7 +677,10 @@ async def cb(e):
         txt="📋 قائمة الـ VIP:\n\n" + "\n".join([f"{k} - {vip_left(int(k)) if k.isdigit() else v}" for k,v in db["vip"].items()]) if db["vip"] else "لا يوجد VIP"
         await e.edit(txt, buttons=back_kb()); return
     if data=="vip_forced":
-        user_state[uid]="wait_forced"; await e.edit("ارسل يوزر القناة للاشتراك الاجباري (مثلا @channel) او ارسل 'الغاء':", buttons=back_kb()); return
+        cur = get_forced_channel() or "مو مفعل"
+        ch_type = "خاصة" if str(cur).startswith("-100") else ("عامة" if cur!="مو مفعل" else "")
+        user_state[uid]="wait_forced"
+        await e.edit(f"📢 الاشتراك الإجباري الحالي:\n{cur} {ch_type}\n\nاختر نوع القناة:\n\n1️⃣ اذا القناة عامة: دز رابطها مثل https://t.me/xxx او @xxx\n2️⃣ اذا القناة خاصة: حوّل أي رسالة من القناة لهنا (Forward)\n\nاو ارسل 'الغاء' للتعطيل\n\n⚠️ لازم البوت يكون ادمن بالقناة", buttons=back_kb()); return
     if data.startswith("vip_dur_"):
         _,_,dur,target=data.split("_",3)
         if dur=="lifetime": exp="lifetime"
@@ -655,7 +698,7 @@ async def cb(e):
         for k,v in db["accounts"].items():
             if v["owner"]!=uid and not is_admin(uid): continue
             running=any(k in kk for kk in posting_tasks.keys())
-            forced_txt = " ⛔ ايقاف اجباري - دوس بدء النشر والغي الايقاف" if is_account_force_stopped(k) else ""
+            forced_txt = " ⛔ ايقاف اجباري" if is_account_force_stopped(k) else ""
             txt+=f"{v.get('phone',k)} - {v.get('status','🟢')} - النشر: {'شغال ✅' if running else 'متوقف ⏹️'}{forced_txt}\n"
         await e.edit(txt, buttons=back_kb()); return
 
@@ -668,6 +711,37 @@ async def on_msg(e):
         return
     s=get_settings(uid)
     txt=(e.text or "").strip()
+    # --- الاشتراك الاجباري: يتعامل مع الرابط او التحويل ---
+    if st=="wait_forced":
+        # 1. اذا حوّل رسالة من قناة خاصة
+        fwd = getattr(e.message, "fwd_from", None)
+        if fwd is not None:
+            ch_id = getattr(fwd, "channel_id", None)
+            ch_post = getattr(fwd, "channel_post", None)
+            if ch_id:
+                # Telethon يعطي channel_id بدون -100، نضيفها
+                full_id = f"-100{ch_id}"
+                s["forced_channel"]=full_id
+                save(); user_state.pop(uid,None)
+                await e.respond(f"تم ✅ تم حفظ القناة الخاصة\n\n🆔 ايدي القناة: {full_id}\nنوعها: خاصة 🔒\n\n⚠️ تأكد البوت ادمن بالقناة، والا ما راح يشتغل الفحص", buttons=main_kb(uid))
+                return
+            # تحويل من حساب مو من قناة
+            await e.respond("⚠️ هاي التحويلة مو من قناة، حوّل رسالة من القناة نفسها، مو من شخص")
+            return
+        # 2. اذا دز الغاء
+        if txt.strip().lower() in ["الغاء","الغاء","cancel","none","-","ايقاف","تعطيل"]:
+            s["forced_channel"]=None
+            save(); user_state.pop(uid,None); await e.respond(f"تم تعطيل الاشتراك الاجباري ✅", buttons=main_kb(uid)); return
+        # 3. اذا دز رابط قناة عامة
+        cleaned = clean_channel(txt)
+        if cleaned == "NEED_FORWARD":
+            await e.respond("⚠️ هذا رابط دعوة خاص (t.me/+...)\n\nهذا الرابط ما ينفع للفحص، لازم تحوّل رسالة من القناة:\n\nروح للقناة > اختار اي رسالة > Forward > اختار البوت ودزها هنا")
+            return
+        if cleaned:
+            s["forced_channel"]=cleaned
+            save(); user_state.pop(uid,None); await e.respond(f"تم ✅ الاشتراك الاجباري = {cleaned}\nنوعها: عامة 🌐\n\n⚠️ تأكد البوت ادمن بالقناة", buttons=main_kb(uid)); return
+        await e.respond("دز رابط القناة العامة او حوّل رسالة من القناة الخاصة")
+        return
     if st=="wait_phone":
         phone=txt
         if not phone.startswith("+"):
@@ -692,7 +766,7 @@ async def on_msg(e):
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
             account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ✅", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}", buttons=main_kb(uid))
         except SessionPasswordNeededError:
             user_state[uid]="wait_2fa"
             await e.respond("🔐 عندك تحقق بخطوتين\nدز كلمة المرور الثانوية:")
@@ -712,7 +786,7 @@ async def on_msg(e):
             db["accounts"][key]={"owner":uid,"session":sess,"phone":tmp["phone"],"status":"🟢 موجود","reason":"-"}; save()
             account_clients[key]=tmp["client"]
             login_tmp.pop(uid,None); user_state.pop(uid,None)
-            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}\nالجلسة بقت نشطة ✅", buttons=main_kb(uid))
+            await e.respond(f"تم اضافة الحساب ✅\nالرقم: {tmp['phone']}", buttons=main_kb(uid))
         except Exception as ex:
             await e.respond(f"كلمة المرور غلط: {ex}\nحاول مرة ثانية:")
         return
@@ -796,11 +870,11 @@ async def on_msg(e):
                                         group_id_final = "-100" + group_id_final
                             except: pass
                         elif "FLOOD" in msg:
-                            failed += f"\n{acc.get('phone')}: انحظر مؤقتاً من الدخول للكروبات (Flood) - انتظر ساعة"
+                            failed += f"\n{acc.get('phone')}: انحظر مؤقتاً من الدخول للكروبات (Flood)"
                         elif "INVITE_HASH_EXPIRED" in msg or "InviteHashExpired" in msg:
-                            failed += f"\n{acc.get('phone')}: رابط الدعوة منتهي / ملغي - جيب رابط جديد"
+                            failed += f"\n{acc.get('phone')}: رابط الدعوة منتهي - جيب رابط جديد"
                         elif "INVITE_HASH_INVALID" in msg:
-                            failed += f"\n{acc.get('phone')}: الرابط غلط - انسخه كامل من التليجرام"
+                            failed += f"\n{acc.get('phone')}: الرابط غلط"
                         elif "USER_ALREADY" in msg:
                             skipped += 1
                         else:
@@ -830,12 +904,12 @@ async def on_msg(e):
                         else:
                             failed += f"\n{acc.get('phone')}: {ex}"
                 else:
-                    failed += f"\n{acc.get('phone')}: الرابط مو صحيح - لازم يبدي بـ https://t.me/"
+                    failed += f"\n{acc.get('phone')}: الرابط مو صحيح"
             except Exception as ex:
                 failed += f"\n{acc.get('phone')}: {ex}"
         if not group_id_final:
             user_state.pop(uid,None)
-            await e.respond(f"❌ فشل الانضمام\n\nالسبب:\n{failed}\n\n---\nتأكد من:\n1. الرابط نسخته كامل من التليجرام\n2. الحساب مو محظور من دخول الكروبات\n3. الكروب ما حذف الرابط القديم", buttons=main_kb(uid))
+            await e.respond(f"❌ فشل الانضمام\n\nالسبب:\n{failed}", buttons=main_kb(uid))
             return
         db["groups"][group_id_final] = {"owner":uid, "title":link, "link":link}
         save(); user_state.pop(uid,None)
@@ -847,49 +921,12 @@ async def on_msg(e):
         try:
             d=int(txt)
             if d<60:
-                await e.respond(f"⚠️ انت دزت {d} ثانية، هذا خطر و ممكن ينحظر حسابك، دز 'اي' للتأكيد او رقم جديد")
+                await e.respond(f"⚠️ انت دزت {d} ثانية، هذا خطر، دز 'اي' للتأكيد او رقم جديد")
                 user_state[uid]="wait_delay_confirm"; return
             s["delay"]=d; save(); user_state.pop(uid,None); await e.respond(f"تم تعيين المدة: {d} ثانية ✅", buttons=main_kb(uid)); return
         except: await e.respond("ارسل رقم صحيح"); return
     if st=="wait_delay_confirm":
         if txt=="اي":
-            s["delay"]=30; save(); user_state.pop(uid,None); await e.respond("تم التأكيد، المدة 30 ثانية ⚠️ انتبه للحظر", buttons=main_kb(uid)); return
+            s["delay"]=30; save(); user_state.pop(uid,None); await e.respond("تم التأكيد، المدة 30 ثانية ⚠️", buttons=main_kb(uid)); return
         try: s["delay"]=int(txt); save(); user_state.pop(uid,None); await e.respond("تم ✅", buttons=main_kb(uid)); return
-        except: await e.respond("دز رقم"); return
-    if st=="wait_delay_random":
-        try:
-            a,b=txt.split("-"); s["delay_min"]=int(a); s["delay_max"]=int(b); save(); user_state.pop(uid,None); await e.respond(f"تم: من {a} الى {b} ثانية عشوائي 🎲", buttons=main_kb(uid)); return
-        except: await e.respond("ارسل هكذا: 60-120"); return
-    if st=="wait_media":
-        if e.photo or e.video:
-            path=f"media_{uid}.jpg"; await e.download_media(path); s["media_file"]=path; s["media_type"]="photo" if e.photo else "video"; save(); user_state.pop(uid,None)
-            await e.respond("تم حفظ الصورة/الفيديو ✅", buttons=main_kb(uid)); return
-        await e.respond("ارسل صورة او فيديو"); return
-    if st=="wait_vip_id":
-        target=txt; user_state[uid]=f"wait_vip_dur_{target}"
-        await e.respond("اختر المدة:", buttons=[[Button.inline("📅 يوم","vip_dur_day_"+target),Button.inline("📅 اسبوع","vip_dur_week_"+target)],[Button.inline("📅 شهر","vip_dur_month_"+target),Button.inline("♾️ مدى الحياة","vip_dur_lifetime_"+target)]]); return
-    if st=="wait_vip_del":
-        db["vip"].pop(txt,None); save(); user_state.pop(uid,None); await e.respond("تم إلغاء VIP ✅", buttons=main_kb(uid)); return
-    if st=="wait_forced":
-        if txt=="الغاء": s["forced_channel"]=None
-        else: s["forced_channel"]=txt
-        save(); user_state.pop(uid,None); await e.respond(f"تم: الاشتراك الاجباري = {s['forced_channel']}", buttons=main_kb(uid)); return
-
-async def main():
-    global tasks_started
-    while True:
-        try:
-            await bot.start(bot_token=BOT_TOKEN)
-            if not tasks_started:
-                asyncio.create_task(vip_checker())
-                asyncio.create_task(daily_report())
-                tasks_started=True
-            print("Bot Running... - البوت شغال ومستمر ✅")
-            await bot.run_until_disconnected()
-        except Exception as e:
-            print(f"البوت فصل، جاري اعادة التشغيل بعد 5 ثواني... الخطأ: {e}")
-            await asyncio.sleep(5)
-            continue
-
-if __name__=="__main__":
-    asyncio.run(main())
+ 
