@@ -6,7 +6,7 @@ from datetime import datetime as dt, timedelta
 from pytz import timezone
 
 # ===== الاعدادات =====
-app = Client("autoPost", api_id=9661697, api_hash="4ae76784fdfecd5df142004955bb8393", bot_token="ضع_توكنك_هنا")
+app = Client("autoPost", api_id=9661697, api_hash="4ae76784fdfecd5df142004955bb8393", bot_token="9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8")
 loop = asyncio.get_event_loop()
 owner = 5723475089
 DEV = "@i999l9"
