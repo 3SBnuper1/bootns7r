@@ -849,4 +849,98 @@ async def on_msg(_: Client, e: Message):
             sess = await tmp["client"].export_session_string(); key = f"acc_{int(datetime.datetime.now().timestamp())}_{random.randint(100, 999)}"
             db["accounts"][key] = {"owner": uid, "session": sess, "phone": tmp["phone"], "status": "🟢 موجود", "reason": "-"}; save(); account_clients[key] = tmp["client"]
             login_tmp.pop(uid, None); user_state.pop(uid, None)
-            kb_ = [[IButton("✅ اي نعم", callback_data="join_prompt_" + key)], [IButton("❌ لا، بعدين", ca
+            kb_ = [[IButton("✅ اي نعم", callback_data="join_prompt_" + key)], [IButton("❌ لا، بعدين", callback_data="main")]]
+            await e.reply(f"تم ✅ {tmp['phone']}\n\nهل تريد انضمام الحساب للمجموعات؟", reply_markup=kb(kb_))
+        except Exception as ex: await e.reply(f"غلط: {ex}")
+        return
+    if st.startswith("wait_grp_"):
+        link = txt.strip(); chosen = st.replace("wait_grp_", "")
+        if chosen.startswith("add_grp_acc_"):
+            ak = chosen.replace("add_grp_acc_", "")
+            if ak in db["accounts"] and db["accounts"][ak]["owner"] == uid: accs = [(ak, db["accounts"][ak])]
+            else: await e.reply("الحساب مو موجود"); user_state.pop(uid, None); return
+            mode_txt = f"للحساب {db['accounts'][ak].get('phone')}"
+        else: accs = [(k, v) for k, v in db["accounts"].items() if v["owner"] == uid]; mode_txt = "لجميع الحسابات"
+        if not accs: await e.reply("ما عندك حساب"); user_state.pop(uid, None); return
+        await e.reply(f"جاري دخول {mode_txt} ... ⏳")
+        joined = 0; skipped = 0; failed = ""; gid_final = None
+        for ak, acc in accs:
+            try:
+                client = await get_client(ak)
+                try:
+                    chat = await client.join_chat(link); gid_final = str(chat.id); joined += 1
+                except UserAlreadyParticipant:
+                    skipped += 1
+                    try:
+                        chat = await client.get_chat(link); gid_final = str(chat.id)
+                    except Exception: pass
+            except FloodWait:
+                failed += f"\n{acc.get('phone')}: Flood"
+            except Exception as ex:
+                msg = str(ex)
+                if "already" in msg.lower() or "participant" in msg.lower():
+                    skipped += 1
+                    try:
+                        chat = await client.get_chat(link); gid_final = str(chat.id)
+                    except Exception: pass
+                elif "INVITE_HASH_EXPIRED" in msg: failed += f"\n{acc.get('phone')}: رابط منتهي"
+                elif "INVITE_HASH_INVALID" in msg: failed += f"\n{acc.get('phone')}: رابط غلط"
+                else: failed += f"\n{acc.get('phone')}: {ex}"
+        if not gid_final: user_state.pop(uid, None); await e.reply(f"❌ فشل\n{failed}", reply_markup=kb(main_kb(uid))); return
+        db["groups"][gid_final] = {"owner": uid, "title": link, "link": link}; save(); user_state.pop(uid, None)
+        await e.reply(f"تم ✅ ({mode_txt})\n✅ دخل: {joined}\n⏭️ موجود: {skipped}\n🆔 {gid_final}\n{failed}", reply_markup=kb(main_kb(uid))); return
+    if st == "wait_caption_single":
+        s["caption"] = txt; s["captions"] = [txt]; s["caption_mode"] = "single"; save(); user_state.pop(uid, None)
+        await e.reply(f"✅ تم حفظ كليشة وحدة:\n{txt}\n\nهسه النشر راح يكون بنفس الكليشة دائماً", reply_markup=kb(main_kb(uid))); return
+    if st == "wait_caption_multi":
+        lines = [l.strip() for l in (e.text or "").split("\n") if l.strip()]
+        if len(lines) < 2:
+            await e.reply("⚠️ لازم تدز كليشتين على الاقل، كل وحدة بسطر\nجرب مرة ثانية:"); return
+        s["captions"] = lines; s["caption"] = lines[0]; s["caption_mode"] = "multi"; save(); user_state.pop(uid, None)
+        txt2 = "✅ تم حفظ عدة كلايش:\n\n"
+        for i, c in enumerate(lines, 1): txt2 += f"{i}. {c}\n"
+        txt2 += "\n🎲 البوت كل نشرة راح يختار وحدة عشوائياً"
+        await e.reply(txt2, reply_markup=kb(main_kb(uid))); return
+    if st == "wait_caption":
+        s["caption"] = txt; s["captions"] = [txt]; s["caption_mode"] = "single"; save(); user_state.pop(uid, None); await e.reply("تم حفظ الكليشة ✅", reply_markup=kb(main_kb(uid))); return
+    if st == "wait_delay":
+        try:
+            d = int(txt)
+            if d < 60: await e.reply(f"⚠️ {d} ثانية خطر، دز 'اي' للتأكيد"); user_state[uid] = "wait_delay_confirm"; return
+            s["delay"] = d; save(); user_state.pop(uid, None); await e.reply(f"تم: {d} ثانية ✅", reply_markup=kb(main_kb(uid))); return
+        except Exception: await e.reply("ارسل رقم"); return
+    if st == "wait_delay_confirm":
+        if txt == "اي": s["delay"] = 30; save(); user_state.pop(uid, None); await e.reply("تم 30 ثانية ⚠️", reply_markup=kb(main_kb(uid))); return
+        try: s["delay"] = int(txt); save(); user_state.pop(uid, None); await e.reply("تم ✅", reply_markup=kb(main_kb(uid))); return
+        except Exception: await e.reply("دز رقم"); return
+    if st == "wait_delay_random":
+        try: a, b = txt.split("-"); s["delay_min"] = int(a); s["delay_max"] = int(b); save(); user_state.pop(uid, None); await e.reply(f"تم: {a}-{b} 🎲", reply_markup=kb(main_kb(uid))); return
+        except Exception: await e.reply("ارسل 60-120"); return
+    if st == "wait_media":
+        if e.photo or e.video:
+            path = f"media_{uid}.jpg"; await e.download(file_name=path); s["media_file"] = path; s["media_type"] = "photo" if e.photo else "video"; save(); user_state.pop(uid, None)
+            await e.reply("تم حفظ ✅", reply_markup=kb(main_kb(uid))); return
+        await e.reply("ارسل صورة"); return
+    if st == "wait_vip_id": target = txt; user_state[uid] = f"wait_vip_dur_{target}"; await e.reply("اختر المدة:", reply_markup=kb([[IButton("📅 يوم", callback_data="vip_dur_day_" + target), IButton("📅 اسبوع", callback_data="vip_dur_week_" + target)], [IButton("📅 شهر", callback_data="vip_dur_month_" + target), IButton("♾️ مدى", callback_data="vip_dur_lifetime_" + target)]])); return
+    if st == "wait_vip_del": db["vip"].pop(txt, None); save(); user_state.pop(uid, None); await e.reply("تم الغاء VIP ✅", reply_markup=kb(main_kb(uid))); return
+
+
+async def main():
+    global tasks_started
+    print("جاري الاتصال بتيليجرام...", flush=True)
+    await bot.start()
+    if not tasks_started:
+        asyncio.create_task(vip_checker()); asyncio.create_task(daily_report()); tasks_started = True
+    print("Bot Running...", flush=True)
+    await idle()
+    await bot.stop()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception:
+        import traceback
+        print("====== حدث خطأ أوقف البوت ======", flush=True)
+        traceback.print_exc()
+        raise
