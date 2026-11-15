@@ -270,7 +270,7 @@ async def start(e):
     if is_new and uid!=ADMIN_ID:
         await bot.send_message(ADMIN_ID,f"🔔 مستخدم جديد\n{sender.first_name}\n@{sender.username}\n{uid}")
     if not await check_gate(e,uid): return
-    await e.respond("🤖 بوت النشر\nاهلا بك",buttons=main_kb(uid))
+    await e.respond("هلا بيك عزيزي المستخدم البوت خاص بالمطور سايكو 📲",buttons=main_kb(uid))
 @bot.on(events.CallbackQuery)
 async def cb(e):
     uid=e.sender_id; data=e.data.decode()
