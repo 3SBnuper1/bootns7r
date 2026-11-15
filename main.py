@@ -3,7 +3,6 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, UserDeactivatedError, AuthKeyUnregisteredError, SessionRevokedError, SessionPasswordNeededError, PhoneCodeInvalidError, UserAlreadyParticipantError
 from telethon.tl.functions.channels import JoinChannelRequest
-
 API_ID=int(os.getenv("API_ID","9661697"))
 API_HASH=os.getenv("API_HASH","4ae76784fdfecd5df142004955bb8393")
 BOT_TOKEN=os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "9277873259:AAGFetmQuOavf11wc0OVYATMnxoftpbH8A8"
@@ -11,7 +10,6 @@ ADMIN_ID=int(os.getenv("ADMIN_ID","5723475089"))
 DEV="@i999l9"
 DATA_FILE="data.json"
 logging.basicConfig(level=logging.WARNING)
-
 def load():
     if not os.path.exists(DATA_FILE):
         return {"users":{},"accounts":{},"groups":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{}}
@@ -23,7 +21,6 @@ def load():
 def save():
     with open(DATA_FILE,"w",encoding="utf-8") as f: json.dump(db,f,ensure_ascii=False,indent=2)
 db=load()
-
 def clean_ch(raw):
     if not raw: return None
     t=raw.strip()
@@ -33,23 +30,22 @@ def clean_ch(raw):
     if not t: return None
     if t.startswith("+") or "joinchat" in t: return "NEED_FORWARD"
     return "@"+t
-
 def get_settings(uid):
     uid=str(uid)
     if uid not in db["settings"]:
-        db["settings"][uid]={"caption":"اهلا بكم 🔥","delay":60,"delay_min":60,"delay_max":120,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"media_type":None,"forced_channel":None}
+        db["settings"][uid]={"caption":"اهلا بكم 🔥","captions":["اهلا بكم 🔥"],"caption_mode":"single","delay":60,"delay_min":60,"delay_max":120,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"media_type":None,"forced_channel":None}
         save()
     s=db["settings"][uid]
+    if "captions" not in s: s["captions"]=[s.get("caption","اهلا بكم 🔥")]
+    if "caption_mode" not in s: s["caption_mode"]="single"
     if "stealth_enabled" not in s: s["stealth_enabled"]=False
     return s
-
 def get_forced():
     s=db["settings"].get(str(ADMIN_ID),{}); ch=s.get("forced_channel")
     if not ch: return None
     if ch=="NEED_FORWARD": return "NEED_FORWARD"
     if str(ch).startswith("-100"): return str(ch)
     return clean_ch(ch)
-
 def is_admin(uid): return uid==ADMIN_ID
 def is_vip(uid):
     if is_admin(uid): return True
@@ -61,14 +57,12 @@ def is_vip(uid):
         if datetime.datetime.now()>exp: del db["vip"][str(uid)]; save(); return False
         return True
     except Exception: return False
-
 def vip_left(uid):
     v=db["vip"].get(str(uid))
     if not v: return None
     if v.get("expire")=="lifetime": return "مدى الحياة"
     exp=datetime.datetime.fromisoformat(v["expire"]); left=exp-datetime.datetime.now()
     return f"{left.days} يوم - {exp.strftime('%Y-%m-%d')}"
-
 def is_force(acc): return acc in db.get("force_stopped",[])
 def force_acc(acc):
     if acc not in db["force_stopped"]: db["force_stopped"].append(acc); save()
@@ -81,7 +75,6 @@ def force_block(uid,a,g,reason="انطرد"):
     db.setdefault("blocked",{})
     db["blocked"][bkey(a,g)]={"owner":uid,"acc":a,"grp":g,"reason":reason,"time":datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
 def t(v): return "✅ مفعل" if v else "❌ معطل"
-
 def main_kb(uid):
     r=[[Button.inline("📁 الحسابات","accounts")]]
     r.append([Button.inline("🚀 النشر","posting"),Button.inline("👥 المجموعات","groups")])
@@ -91,12 +84,9 @@ def main_kb(uid):
     r.append([Button.inline("👑 اشتراكي","check_my_vip"),Button.inline("🔍 فحص","check_acc")])
     return r
 def back_kb(): return [[Button.inline("🔙 رجوع","main")]]
-
 bot=TelegramClient("bot",API_ID,API_HASH)
 posting_tasks={}; stats_today={"count":0}; login_tmp={}; account_clients={}; tasks_started=False
 user_state={}; stealth_counter={}
-
-# --- دالة اشعارات مدمجة (كانت دالتين متكررة) ---
 async def notify_admin(kind, uid):
     try:
         sender=await bot.get_entity(uid)
@@ -109,7 +99,6 @@ async def notify_admin(kind, uid):
             msg=f"🔔 اشتراك جديد بقناة البوت\n\nقام {full}\n🔗 اليوزر: {username}\n🆔 الايدي: `{uid}`\n🕐 الوقت: {now}\nبالاشتراك بقناة البوت\n\n👥 عدد المشتركين الكلي: {len(db.get('subscribed',[]))}"
         await bot.send_message(ADMIN_ID, msg)
     except Exception as ex: print("notify error:",ex)
-
 async def get_client(acc_key):
     if acc_key in account_clients:
         try:
@@ -120,7 +109,6 @@ async def get_client(acc_key):
     if not acc: return None
     client=TelegramClient(StringSession(acc["session"]),API_ID,API_HASH)
     await client.connect(); account_clients[acc_key]=client; return client
-
 async def resolve_gid(client,link_or_id):
     if isinstance(link_or_id,str) and "t.me" in link_or_id:
         link=link_or_id.strip()
@@ -137,7 +125,6 @@ async def resolve_gid(client,link_or_id):
                 return "-100"+gid if gid.isdigit() and not gid.startswith("-100") else gid
         except Exception as e: print(e); return None
     return link_or_id
-
 async def leave_real(client,gid):
     try: ent=await client.get_entity(int(gid))
     except Exception: return False
@@ -149,7 +136,6 @@ async def leave_real(client,gid):
         from telethon.tl.functions.messages import DeleteChatUserRequest
         me=await client.get_me(); await client(DeleteChatUserRequest(int(gid),me.id)); return True
     except Exception: return False
-
 async def check_forced(uid):
     ch=get_forced()
     if not ch or ch=="NEED_FORWARD": return True
@@ -168,7 +154,6 @@ async def check_forced(uid):
             target=int(ch) if str(ch).startswith("-100") else ch
             await bot.get_participant(target,uid); return True
         except Exception: return False
-
 async def check_gate(e,uid):
     if is_admin(uid): return True
     if not await check_forced(uid):
@@ -181,13 +166,10 @@ async def check_gate(e,uid):
     if not is_vip(uid):
         await e.respond(f"❌ غير مشترك VIP\nراسل المطور:\n{DEV}",buttons=[[Button.url("📩 راسل المطور",f"https://t.me/{DEV.replace('@','')}")]]); return False
     return True
-
 def forced_btns():
     ch=get_forced()
     if str(ch).startswith("-100"): return [[Button.url("📩 راسل المطور",f"https://t.me/{DEV.replace('@','')}")],[Button.inline("✅ تحققت","check_forced")]]
     return [[Button.url("📢 اشترك",f"https://t.me/{str(ch).replace('@','')}")],[Button.inline("✅ تحققت","check_forced")]]
-
-# --- النشر مع التخفي بنفس النص ---
 async def send_one(uid,acc_key,grp_id):
     s=get_settings(uid); acc=db["accounts"].get(acc_key)
     if not acc: return False
@@ -203,7 +185,10 @@ async def send_one(uid,acc_key,grp_id):
                 db["groups"][real_id]=db["groups"].pop(grp_id); save()
             if not real_id:
                 await bot.send_message(uid,f"⚠️ ما كدرت احول الرابط: {grp_id}"); return False
-        caption_to_send=s["caption"]  # نفس النص للكل
+        if s.get("caption_mode")=="multi" and s.get("captions"):
+            caption_to_send=random.choice(s["captions"])
+        else:
+            caption_to_send=s.get("caption","اهلا بكم 🔥")
         is_reply=False
         if s.get("stealth_enabled"):
             ck=f"{acc_key}_{real_id}"; c=stealth_counter.get(ck,0)
@@ -223,7 +208,7 @@ async def send_one(uid,acc_key,grp_id):
                     stats_today["count"]+=1; return True
                 raise Exception("ماكو رسالة للرد")
             except Exception:
-                pass # يطيح للنشر العادي بنفس النص
+                pass
         if s["media_enabled"] and s["media_file"] and os.path.exists(s["media_file"]):
             await client.send_file(int(real_id),s["media_file"],caption=caption_to_send)
         else:
@@ -248,7 +233,6 @@ async def send_one(uid,acc_key,grp_id):
         print(f"خطأ نشر: {e}")
         if s["protect_enabled"]: await bot.send_message(uid,f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
-
 async def posting_loop(uid,acc_key,grp_id):
     s=get_settings(uid)
     while True:
@@ -260,7 +244,6 @@ async def posting_loop(uid,acc_key,grp_id):
             await asyncio.sleep(delay)
         except asyncio.CancelledError: break
         except Exception as e: print(e); await asyncio.sleep(10)
-
 def start_post(uid,acc_key,grp_id):
     if is_force(acc_key): return "force_stopped"
     if is_blocked(acc_key,grp_id): return "blocked"
@@ -276,7 +259,6 @@ def stop_all_acc(uid,acc_key):
     for k in list(posting_tasks.keys()):
         if k.startswith(f"{uid}_{acc_key}_"): posting_tasks[k].cancel(); del posting_tasks[k]; cnt+=1
     return cnt
-
 async def vip_checker():
     while True:
         now=datetime.datetime.now()
@@ -294,7 +276,6 @@ async def vip_checker():
                     except Exception: pass
             except Exception: pass
         await asyncio.sleep(3600)
-
 async def daily_report():
     while True:
         now=datetime.datetime.now(); target=now.replace(hour=23,minute=59,second=0)
@@ -305,7 +286,6 @@ async def daily_report():
                 try: await bot.send_message(int(uid),f"📊 تقرير يومي\nنشرت اليوم: {stats_today['count']}")
                 except Exception: pass
         stats_today["count"]=0
-
 @bot.on(events.NewMessage(pattern="/start"))
 async def start(e):
     uid=e.sender_id; sender=await e.get_sender()
@@ -317,7 +297,6 @@ async def start(e):
     db["users"][str(uid)]={"name":sender.first_name or "","username":sender.username or "","id":uid,"time":datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}; save()
     if is_new and uid!=ADMIN_ID:
         await notify_admin("new",uid)
-        # --- الاحالة ---
         if ref_code and ref_code!=str(uid) and ref_code in db["users"]:
             db.setdefault("referrals",{})
             if ref_code not in db["referrals"]: db["referrals"][ref_code]={"invited":[],"rewarded":False}
@@ -338,7 +317,6 @@ async def start(e):
                     except: pass
     if not await check_gate(e,uid): return
     await e.respond("🤖 بوت النشر\nاهلا بك",buttons=main_kb(uid))
-
 @bot.on(events.CallbackQuery)
 async def cb(e):
     uid=e.sender_id; data=e.data.decode()
@@ -366,69 +344,44 @@ async def cb(e):
     if not is_admin(uid) and not is_vip(uid):
         if data not in ["check_my_vip","main","about_bot","my_ref"]: await e.answer("❌ غير VIP",alert=True); return
     await e.answer(); s=get_settings(uid)
-
-    # --- زر معلومات حول البوت ---
     if data=="about_bot":
         txt="""ℹ️ معلومات حول البوت - شنو يسوي بالتفصيل؟
 
 🚀 النشر:
-- تضيف حساباتك التليجرام للبوت (بـ جلسة StringSession)
+- تضيف حساباتك التليجرام للبوت
 - تضيف المجموعات اللي تريد تنشر بيها
-- تكتب كليشة النشر (نص + صورة او فيديو اختياري)
-- البوت ينشر الكليشة بكل المجموعات تلقائياً، كل حساب ينشر بوقته
-- تكدر تخلي النشر عشوائي، او بمدة ثابتة، او تشغل النشر التلقائي
+- تكتب كليشة النشر (نص + صورة او فيديو اختياري) - كليشة وحدة او عدة كلايش
+- البوت ينشر الكليشة بكل المجموعات تلقائياً
 
-🛡️ الحماية - شلون نحمي حسابك من الحظر؟
-1. فارق زمني: بين كل حساب وحساب من 5 الى 25 ثانية، حتى تليجرام ما يشوف كل الحسابات تنشر بنفس اللحظة
-2. استراحة: كل 50 نشرة، الحساب ياخذ استراحة دقيقة كاملة
-3. تأخير عشوائي: اذا شغلت العشوائي، المدة بين النشرات تصير من 60 الى 120 ثانية مو ثابتة، حتى ما يبين بوت
-4. ايقاف تلقائي: اذا حساب انحظر او انطرد من كروب، البوت يوقفه وحده وما يرجع ينشر بيه
-5. حماية من الحذف: ما احد يكدر يحذف حساباتك الا انت
-6. ايقاف اجباري طوارئ: اذا حسيت بخطر، توقف كلشي بزر واحد
+🛡️ الحماية:
+1. فارق زمني بين الحسابات
+2. استراحة كل 50 نشرة
+3. تأخير عشوائي 60-120 ثانية
+4. ايقاف تلقائي اذا انحظر او انطرد
+5. ايقاف اجباري طوارئ
 
 🥷 وضع التخفي:
-- النشرة الاولى والثانية: نشر عادي
-- النشرة الثالثة: يرد على رسالة موجودة بالكروب بنفس نص النشر بالضبط، كأنه عضو حقيقي دا يسولف
-- هيج تليجرام يعتبر حسابك حساب حقيقي مو بوت
+- النشرة 1 و 2: نشر عادي
+- النشرة 3: رد على رسالة موجودة بنفس نص النشر
 
-👥 نظام الاحالة:
-- عندك رابط احالة خاص بيك
-- كل 3 اشخاص يدخلون من رابطك، تاخذ يوم VIP مجاني تلقائياً
-
-👑 VIP:
-- نشر اسرع، حسابات اكثر، بدون حدود
-- اذا انتهى اشتراكك، البوت يوقف النشر وينبهك
-
-❓ اي مشكلة راسل الادمن
+👥 الاحالة: كل 3 يدخلون من رابطك = يوم VIP مجاني
+👑 VIP: نشر اسرع، حسابات اكثر
 """
         await e.edit(txt, buttons=[[Button.inline("🔙 رجوع","main")]]); return
-
-    # --- الاحالة ---
     if data=="my_ref":
         me=await bot.get_me(); link=f"https://t.me/{me.username}?start=ref_{uid}"
         cnt=len(db.get("referrals",{}).get(str(uid),{"invited":[]}).get("invited",[]))
-        await e.edit(f"👥 نظام الاحالة 🎁\n\n🔗 رابطك:\n{link}\n\n👥 جبت: {cnt}/3\n🎁 كل 3 اشخاص يدخلون من رابطك تاخذ يوم VIP مجاني!\n\nدز رابطك لاصدقائك واجمع VIP مجاني 👑", buttons=[[Button.inline("🔙 رجوع","main")]]); return
-
-    # --- التخفي ---
+        await e.edit(f"👥 نظام الاحالة 🎁\n\n🔗 رابطك:\n{link}\n\n👥 جبت: {cnt}/3\n🎁 كل 3 اشخاص يدخلون من رابطك تاخذ يوم VIP مجاني!", buttons=[[Button.inline("🔙 رجوع","main")]]); return
     if data=="stealth_info":
         cur=s.get("stealth_enabled",False)
-        txt2=f"""🥷 وضع التخفي - شنو يسوي؟
-
+        txt2=f"""🥷 وضع التخفي
 اذا شغلته:
-النشر الاول والثاني: ينشر عادي مثل كل مرة
-النشر الثالث: ما ينشر رسالة جديدة، يروح يرد على رسالة موجودة بالكروب بنفس نص النشر بالضبط، كأنه عضو حقيقي!
-
-ليش مهم؟
-تليجرام من يشوف حساب بس ينشر رسائل جديدة، يعرف انو بوت ويحظره بسرعة.
-بس من يشوفه يرد على الناس ويتفاعل، يعتبره حساب حقيقي وما يحظره.
-
-⚠️ ملاحظة: يحتاج الكروب بيه رسائل حتى يرد عليها.
-
+النشر الاول والثاني: ينشر عادي
+النشر الثالث: يرد على رسالة موجودة بالكروب بنفس نص النشر بالضبط
 الحالة الحالية: {'✅ شغال' if cur else '❌ مطفي'}
 """
         btns=[[Button.inline("✅ شغل التخفي" if not cur else "❌ طفي التخفي","toggle_stealth")],[Button.inline("🔙 رجوع","main")]]
         await e.edit(txt2, buttons=btns); return
-
     if data.startswith("join_prompt_"):
         key=data.replace("join_prompt_","")
         grps=[(k,v) for k,v in db["groups"].items() if v.get("owner")==uid or is_admin(uid)]
@@ -438,7 +391,7 @@ async def cb(e):
             title=g.get("title",gid) if isinstance(g,dict) else str(g)
             btns.append([Button.inline(f"➕ انضمام | {title[:30]}",f"do_join_{key}_{gid}")])
         btns.append([Button.inline("✅ تم","main")])
-        await e.edit("📋 اختر المجموعات اللي تريد الحساب ينضم الها:\nدوس انضمام بصف كل مجموعة تريدها",buttons=btns); return
+        await e.edit("📋 اختر المجموعات اللي تريد الحساب ينضم الها:",buttons=btns); return
     if data.startswith("do_join_"):
         try: _,key,gid=data.split("_",2)
         except: await e.answer("خطأ",alert=True); return
@@ -541,7 +494,6 @@ async def cb(e):
         btns.append([Button.inline("🔙 رجوع","posting")]); await e.edit(txt,buttons=btns); return
     if data.startswith("unforce_and_start_") or data.startswith("unforce_"):
         acc_key=data.replace("unforce_and_start_","").replace("unforce_","")
-        is_and=data.startswith("unforce_and_start_")
         if unforce_acc(acc_key):
             phone=db["accounts"].get(acc_key,{}).get("phone",acc_key)
             await e.edit(f"✅ تم الغاء الايقاف {phone}\nهسه رجع طبيعي.",buttons=[[Button.inline("▶️ بدء النشر","start_post")],[Button.inline("🔙 رجوع","main")]])
@@ -622,7 +574,9 @@ async def cb(e):
                     phone=db["accounts"].get(fa,{}).get("phone",fa); btns.append([Button.inline(f"✅ الغاء: {phone}",f"unforce_and_start_{fa}")])
                 btns.append([Button.inline("🔙 رجوع","posting")]); await e.edit("⛔ موقوف اجبارياً",buttons=btns); return
             msg=""
-            if cnt>0: msg+=f"✅ بدء النشر {cnt} 🔁\nالكليشة: {s['caption'][:100]}\n"
+            if cnt>0:
+                caps=s.get("captions",[s.get("caption","")])
+                msg+=f"✅ بدء النشر {cnt} 🔁\nالوضع: {'عدة كلايش ('+str(len(caps))+') 🎲' if s.get('caption_mode')=='multi' else 'كليشة وحدة 📝'}\nالكليشة: {s.get('caption','')[:100]}\n"
             if already>0: msg+=f"\n⚠️ شغال: {already}\n"
             if blocked_cnt>0: msg+=f"\n⛔ انطرد: {blocked_cnt}\n"
             if force_cnt>0: msg+=f"\n⛔ موقوف: {force_cnt}\n"
@@ -631,7 +585,22 @@ async def cb(e):
             if cnt>0: await e.edit(f"⏹️ تم ايقاف {cnt} ✅",buttons=back_kb())
             else: await e.edit("⚠️ متوقف اصلاً",buttons=back_kb())
         return
-    if data=="set_caption": user_state[uid]="wait_caption"; await e.edit("ارسل الكليشة:",buttons=back_kb()); return
+    if data=="set_caption":
+        cur_mode=s.get("caption_mode","single"); cur_count=len(s.get("captions",[]))
+        btns=[[Button.inline("📝 كليشة وحدة","caption_single")],[Button.inline("📝 عدة كلايش","caption_multi")],[Button.inline("📋 عرض الكلايش الحالية","caption_show")],[Button.inline("🔙 رجوع","posting")]]
+        await e.edit(f"📝 الكليشة\n\nالوضع الحالي: {'عدة كلايش' if cur_mode=='multi' else 'كليشة وحدة'}\nعدد الكلايش: {cur_count}\n\nشلون تريد تنشر؟",buttons=btns); return
+    if data=="caption_single":
+        user_state[uid]="wait_caption_single"
+        await e.edit("📝 دز الكليشة الوحدة:\nمثال: اهلا بكم 🔥",buttons=back_kb()); return
+    if data=="caption_multi":
+        user_state[uid]="wait_caption_multi"
+        await e.edit("📝 دز عدة كلايش، كل كليشة بسطر:\n\nمثال:\nاهلا بكم 🔥\nعرض اليوم خصم 50%\nتوصيل لكل المحافظات 🚀\n\nالبوت كل نشرة راح يختار وحدة عشوائياً",buttons=back_kb()); return
+    if data=="caption_show":
+        caps=s.get("captions",[])
+        txt="📋 الكلايش الحالية:\n\n"
+        for i,c in enumerate(caps,1): txt+=f"{i}. {c}\n---\n"
+        if not caps: txt+="ماكو كلايش"
+        await e.edit(txt,buttons=[[Button.inline("🔙 رجوع","posting")]]); return
     if data=="set_delay":
         if s["random_enabled"]: user_state[uid]="wait_delay_random"; await e.edit("ارسل هكذا: 60-120",buttons=back_kb())
         else: user_state[uid]="wait_delay"; await e.edit("ارسل المدة بالثواني.",buttons=back_kb())
@@ -639,7 +608,6 @@ async def cb(e):
     if data=="auto_settings":
         btns=[[Button.inline(f"🖼️ صور: {t(s['media_enabled'])}","toggle_media")],[Button.inline(f"🛡️ حماية: {t(s['protect_enabled'])}","toggle_protect")],[Button.inline(f"📊 تقرير: {t(s['report_enabled'])}","toggle_report")],[Button.inline(f"🎲 عشوائي: {t(s['random_enabled'])}","toggle_random")],[Button.inline(f"🥷 تخفي: {t(s['stealth_enabled'])}","toggle_stealth")],[Button.inline("🔙 رجوع","posting")]]
         await e.edit("⚙️ اعدادات",buttons=btns); return
-    # --- كل التبديلات بدالة وحدة ---
     if data.startswith("toggle_"):
         key={"toggle_media":"media_enabled","toggle_protect":"protect_enabled","toggle_report":"report_enabled","toggle_random":"random_enabled","toggle_stealth":"stealth_enabled"}[data]
         s[key]=not s[key]; save()
@@ -688,7 +656,6 @@ async def cb(e):
             running=any(k in kk for kk in posting_tasks.keys())
             txt+=f"{v.get('phone',k)} - {'شغال ✅' if running else 'متوقف ⏹️'}{' ⛔ ايقاف' if is_force(k) else ''}\n"
         await e.edit(txt,buttons=back_kb()); return
-
 @bot.on(events.NewMessage)
 async def on_msg(e):
     uid=e.sender_id; st=user_state.get(uid)
@@ -826,7 +793,20 @@ async def on_msg(e):
         if not gid_final: user_state.pop(uid,None); await e.respond(f"❌ فشل\n{failed}",buttons=main_kb(uid)); return
         db["groups"][gid_final]={"owner":uid,"title":link,"link":link}; save(); user_state.pop(uid,None)
         await e.respond(f"تم ✅ ({mode_txt})\n✅ دخل: {joined}\n⏭️ موجود: {skipped}\n🆔 {gid_final}\n{failed}",buttons=main_kb(uid)); return
-    if st=="wait_caption": s["caption"]=txt; save(); user_state.pop(uid,None); await e.respond("تم حفظ الكليشة ✅",buttons=main_kb(uid)); return
+    if st=="wait_caption_single":
+        s["caption"]=txt; s["captions"]=[txt]; s["caption_mode"]="single"; save(); user_state.pop(uid,None)
+        await e.respond(f"✅ تم حفظ كليشة وحدة:\n{txt}\n\nهسه النشر راح يكون بنفس الكليشة دائماً",buttons=main_kb(uid)); return
+    if st=="wait_caption_multi":
+        lines=[l.strip() for l in (e.text or "").split("\n") if l.strip()]
+        if len(lines)<2:
+            await e.respond("⚠️ لازم تدز كليشتين على الاقل، كل وحدة بسطر\nجرب مرة ثانية:"); return
+        s["captions"]=lines; s["caption"]=lines[0]; s["caption_mode"]="multi"; save(); user_state.pop(uid,None)
+        txt2="✅ تم حفظ عدة كلايش:\n\n"
+        for i,c in enumerate(lines,1): txt2+=f"{i}. {c}\n"
+        txt2+="\n🎲 البوت كل نشرة راح يختار وحدة عشوائياً"
+        await e.respond(txt2,buttons=main_kb(uid)); return
+    if st=="wait_caption":
+        s["caption"]=txt; s["captions"]=[txt]; s["caption_mode"]="single"; save(); user_state.pop(uid,None); await e.respond("تم حفظ الكليشة ✅",buttons=main_kb(uid)); return
     if st=="wait_delay":
         try:
             d=int(txt)
@@ -847,7 +827,6 @@ async def on_msg(e):
         await e.respond("ارسل صورة"); return
     if st=="wait_vip_id": target=txt; user_state[uid]=f"wait_vip_dur_{target}"; await e.respond("اختر المدة:",buttons=[[Button.inline("📅 يوم","vip_dur_day_"+target),Button.inline("📅 اسبوع","vip_dur_week_"+target)],[Button.inline("📅 شهر","vip_dur_month_"+target),Button.inline("♾️ مدى","vip_dur_lifetime_"+target)]]); return
     if st=="wait_vip_del": db["vip"].pop(txt,None); save(); user_state.pop(uid,None); await e.respond("تم الغاء VIP ✅",buttons=main_kb(uid)); return
-
 async def main():
     global tasks_started
     while True:
