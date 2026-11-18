@@ -1,7 +1,7 @@
 import asyncio, json, os, random
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message, CallbackQuery, ForceReply, InlineKeyboardMarkup as Markup, InlineKeyboardButton as Button, ChatMemberUpdated
-from pyrogram.errors import PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked, UserIsBlocked, BotBlocked
+from pyrogram.errors import PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked, UserIsBlocked
 from datetime import datetime as dt, timedelta
 from pytz import timezone
 
@@ -38,10 +38,9 @@ def write(fp, data):
     with open(fp, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
 def read(fp):
     if not os.path.exists(fp):
-        write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{},"blocked_users":[],"channels":{},"stats_per_user":{},"last_report_date":None})
+        write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None})
     with open(fp, encoding="utf-8") as f: return json.load(f)
 db = read("data.json")
-# توافق مع الملف القديم
 for _k,_v in {"channels":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None}.items():
     if _k not in db: db[_k]=_v
 def save(): write("data.json", db)
@@ -99,7 +98,7 @@ account_clients = {}
 stats_today = {"count":0}
 stealth_counter = {}
 
-# ===== جديد: اشعار اشتراك + حظر + عدد المشتركين الكلي =====
+# ===== اشعار اشتراك + حظر + عدد المشتركين الكلي =====
 async def get_forced_total():
     ch=get_forced()
     if not ch: return 0
@@ -134,7 +133,7 @@ async def on_my_chat_member(_, update: ChatMemberUpdated):
                 await notify_blocked(update.from_user.id, update.from_user.first_name or "", update.from_user.username or "")
     except: pass
 
-# ===== جديد: نسخة احتياطية كل نص ساعة =====
+# ===== نسخة احتياطية كل نص ساعة =====
 async def backup_loop():
     while True:
         await asyncio.sleep(1800)
@@ -144,7 +143,7 @@ async def backup_loop():
                 await app.send_document(owner, "data.json", caption=f"💾 نسخة احتياطية\n🕒 {now}\n👥 المستخدمين: {len(db['users'])}\n📁 الحسابات: {len(db['accounts'])}\n👥 المجموعات: {len(db['groups'])}\n📢 القنوات: {len(db.get('channels',{}))}")
         except Exception as e: print(f"خطأ نسخة: {e}")
 
-# ===== جديد: اذاعة =====
+# ===== اذاعة =====
 async def do_broadcast(target, message: Message):
     sent=0; failed=0; blocked_now=[]
     targets=[]
@@ -159,7 +158,7 @@ async def do_broadcast(target, message: Message):
             elif message.text: await app.send_message(tid, message.text)
             else: await message.copy(tid)
             sent+=1
-        except (BotBlocked, UserIsBlocked):
+        except UserIsBlocked:
             failed+=1
             if str(tid) not in db.get("blocked_users",[]) and tid>0: blocked_now.append(tid)
         except: failed+=1
@@ -694,7 +693,7 @@ async def send_one(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن - VIP و احصائيات - بدون تكرار =====
+# ===== الادمن =====
 @app.on_message(filters.command("admin") & filters.private & filters.user(owner))
 async def adminCmd(_: Client, message: Message):
     await message.reply(f"مرحبا عزيزي في لوحة المالك", reply_markup=Markup([[Button("- الغاء VIP -", callback_data="vipDel"), Button("- تفعيل VIP -", callback_data="vipAdd")],[Button("- الاحصائيات -", callback_data="statics"), Button("- قناة الاشتراك -", callback_data="vipForced")],[Button("- 📢 اذاعة -", callback_data="broadcastMenu")]]))
@@ -779,4 +778,94 @@ async def vipForced(_: Client, callback: CallbackQuery):
     cleaned=txt.replace("https://","").replace("http://","").replace("t.me/","").replace("telegram.me/","").replace("@","").split("/")[0].split("?")[0].strip()
     s=get_settings(owner); s["forced_channel"]="@"+cleaned; save()
     total=await get_forced_total()
-    a
+    await ask.reply(f"تم ✅ اجباري = @{cleaned}\n📊 عدد المشتركين الكلي: {total}", reply_markup=Markup([[Button("- العوده -", callback_data="toHome")]]))
+
+@app.on_callback_query(filters.regex(r"^(checkMyVip)$"))
+async def checkMyVip(_: Client, callback: CallbackQuery):
+    uid=callback.from_user.id
+    if is_vip(uid): await callback.message.edit_text(f"VIP ✅\n{vip_left(uid)}", reply_markup=backMarkup)
+    else: await callback.message.edit_text(f"عادي ❌\nراسل: {DEV}", reply_markup=Markup([[Button("📩 راسل", url=f"https://t.me/{DEV.replace('@','')}")]]))
+
+@app.on_callback_query(filters.regex(r"^(checkAcc)$"))
+async def checkAcc(_: Client, callback: CallbackQuery):
+    uid=callback.from_user.id; txt="🔍 فحص:\n\n"
+    for k,v in db["accounts"].items():
+        if v["owner"]!=uid and not is_admin(uid): continue
+        running=f"{uid}_posting" in posting_tasks
+        txt+=f"{v.get('phone',k)} - {'شغال ✅' if running else 'متوقف ⏹️'}{' ⛔ ايقاف' if is_force(k) else ''}\n"
+    await callback.message.edit_text(txt, reply_markup=backMarkup)
+
+@app.on_callback_query(filters.regex(r"^(noop)$"))
+async def noopCb(_: Client, callback: CallbackQuery):
+    await callback.answer(" ", show_alert=False)
+
+async def vip_checker():
+    while True:
+        now=dt.now()
+        for uid,v in list(db["vip"].items()):
+            if v.get("expire")=="lifetime": continue
+            try:
+                exp=dt.fromisoformat(v["expire"])
+                if (exp-now).total_seconds()<=86400 and not v.get("notified"):
+                    v["notified"]=True; save()
+                    try: await app.send_message(int(uid),"⚠️ اشتراكك VIP راح يخلص باجر!")
+                    except: pass
+                if now>exp:
+                    del db["vip"][uid]; save()
+                    try: await app.send_message(int(uid),"❌ انتهى اشتراكك VIP")
+                    except: pass
+            except: pass
+        await asyncio.sleep(3600)
+
+# ===== تقرير يومي: لكل VIP تقريره + للادمن الكل =====
+async def daily_report():
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now=_timezone.localize(dt.now())
+            today_str=now.strftime("%Y-%m-%d")
+            if now.hour==2 and now.minute==59:
+                if db.get("last_report_date")==today_str:
+                    await asyncio.sleep(61); continue
+                db["last_report_date"]=today_str; save()
+                total=stats_today.get("count",0)
+                per_user=dict(db.get("stats_per_user",{}))
+                for uid_str, count in list(per_user.items()):
+                    if count==0: continue
+                    try:
+                        uid=int(uid_str)
+                        s=get_settings(uid)
+                        if not s.get("report_enabled",True): continue
+                        if is_vip(uid) and uid!=owner:
+                            await app.send_message(uid, f"📊 تقرير يومي\nنشرت اليوم: {count}")
+                            await asyncio.sleep(0.5)
+                    except: pass
+                try:
+                    text=f"📊 تقرير يومي كامل\n📅 {today_str}\n\n🔥 المجموع الكلي: {total}\n\n"
+                    if not per_user or all(v==0 for v in per_user.values()):
+                        text+="ماكو نشر اليوم"
+                    else:
+                        for uid_str, count in per_user.items():
+                            if count==0: continue
+                            u=db["users"].get(uid_str,{})
+                            text+=f"👤 {u.get('name','مجهول')} (@{u.get('username','ماكو')})\n🆔 {uid_str}\n📤 نشر: {count}\n\n"
+                    await app.send_message(owner, text)
+                except Exception as e: print(f"خطأ تقرير ادمن: {e}")
+                stats_today["count"]=0
+                db["stats_per_user"]={}; save()
+        except Exception as e: print(f"خطأ تقرير: {e}")
+        await asyncio.sleep(1)
+
+async def reStartPosting():
+    await asyncio.sleep(30)
+    for uid in list(db["settings"].keys()):
+        s=db["settings"][uid]
+        if s.get("last_post_accs") and s.get("last_post_groups"):
+            key=f"{uid}_posting"
+            if key not in posting_tasks: posting_tasks[key]=asyncio.create_task(posting_loop(int(uid)))
+
+async def main():
+    asyncio.create_task(reStartPosting()); asyncio.create_task(vip_checker()); asyncio.create_task(daily_report()); asyncio.create_task(backup_loop())
+    await app.start(); await idle()
+if __name__=="__main__":
+    loop.run_until_complete(main())
