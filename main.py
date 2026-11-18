@@ -28,7 +28,6 @@ async def wait_input(uid, text, timeout=60, reply_markup=None):
 
 @app.on_message(filters.private & ~filters.command(["start"]), group=-1)
 async def _on_wait(_, message: Message):
-    # تجاهل رسائل البوتات
     if message.from_user and message.from_user.is_bot:
         return
     uid = message.from_user.id
@@ -51,8 +50,16 @@ def save(): write("data.json", db)
 def get_settings(uid):
     uid=str(uid)
     if uid not in db["settings"]:
-        db["settings"][uid]={"caption":"اهلا بكم 🔥","captions":["اهلا بكم 🔥"],"caption_mode":"single","delay":60,"delay_min":60,"delay_max":120,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"forced_channel":None,"last_post_accs":[],"last_post_groups":[]}
+        db["settings"][uid]={"caption":"اهلا بكم 🔥","captions":["اهلا بكم 🔥"],"caption_mode":"single","msg_delay":10,"msg_min":10,"msg_max":30,"media_enabled":False,"protect_enabled":True,"report_enabled":True,"random_enabled":False,"stealth_enabled":False,"media_file":None,"forced_channel":None,"last_post_accs":[],"last_post_groups":[]}
         save()
+    else:
+        s=db["settings"][uid]
+        if "delay" in s: s.pop("delay",None)
+        if "delay_min" in s: s.pop("delay_min",None)
+        if "delay_max" in s: s.pop("delay_max",None)
+        if "msg_delay" not in s: s["msg_delay"]=10
+        if "msg_min" not in s: s["msg_min"]=10
+        if "msg_max" not in s: s["msg_max"]=30
     return db["settings"][uid]
 
 def get_forced():
@@ -104,7 +111,6 @@ account_clients = {}
 stats_today = {"count":0}
 stealth_counter = {}
 
-# ===== اشعار اشتراك + حظر =====
 async def get_forced_total():
     ch=get_forced()
     if not ch: return 0
@@ -116,7 +122,6 @@ async def get_forced_total():
         except: return 0
 
 async def notify_subscribed(uid, first_name, username):
-    # لا تحسب البوت نفسه
     try:
         me = await app.get_me()
         if uid == me.id:
@@ -152,7 +157,6 @@ async def on_my_chat_member(_, update: ChatMemberUpdated):
                 await notify_blocked(update.from_user.id, update.from_user.first_name or "", update.from_user.username or "")
     except: pass
 
-# ===== نسخة احتياطية - اول ما يشتغل + كل نص ساعة =====
 async def send_backup():
     try:
         if os.path.exists("data.json"):
@@ -167,7 +171,6 @@ async def backup_loop():
         await asyncio.sleep(1800)
         await send_backup()
 
-# ===== اذاعة =====
 async def do_broadcast(target, message: Message):
     sent=0; failed=0; blocked_now=[]
     targets=[]
@@ -206,14 +209,11 @@ async def subscription(message):
     except UserNotParticipant: return ch
     except: return True
 
-# ===== START =====
 @app.on_message(filters.command("start") & filters.private)
 async def start(_: Client, message: Message):
-    # اذا اللي داز هو بوت، تجاهله تماما - هذا هو حل مشكلة البوت يحسب نفسه مستخدم
     if message.from_user.is_bot:
         return
     uid=message.from_user.id
-    # اذا الايدي هو ايدي البوت نفسه، تجاهله
     try:
         me = await app.get_me()
         if uid == me.id:
@@ -264,12 +264,13 @@ async def aboutBot(_: Client, callback: CallbackQuery):
     txt="""ℹ️ معلومات حول البوت
 
 🚀 النشر: تضيف حسابات + مجموعات + كليشة (وحدة او عدة)
-البوت ينشر تلقائياً بكل المجموعات
+البوت ينشر بكل الحسابات وكل المجموعات دفعة وحدة، بنفس اللحظة
+
+⏱️ المدة: وقت بين رسالة ورسالة، انت تحدده
+🎲 العشوائي: وقت عشوائي بين رسالة ورسالة فقط، انت تحدد من - الى
+النشر مستمر بدون دورة وبدون توقف
 
 🛡️ الحماية:
-- حلقة وحدة: سوبر ورا سوبر، مو 6 بنفس الثانية
-- انتظار 5-15 ثانية بين كل سوبر
-- تأخير عشوائي بين كل دورة
 - ايقاف تلقائي اذا انطرد او انحظر
 - ايقاف اجباري طوارئ
 
@@ -296,7 +297,6 @@ async def stealthInfo(_: Client, callback: CallbackQuery):
     btn=Button("❌ طفي التخفي", callback_data="toggleStealth") if cur else Button("✅ شغل التخفي", callback_data="toggleStealth")
     await callback.message.edit_text(txt, reply_markup=Markup([[btn],[Button("- العوده -", callback_data="toHome")]]))
 
-# ===== الحسابات =====
 @app.on_callback_query(filters.regex(r"^(accounts)$"))
 async def accountsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -375,7 +375,6 @@ async def doJoin(_: Client, callback: CallbackQuery):
         await callback.answer("تم الانضمام ✅")
     except Exception as ex: await callback.answer(f"فشل: {ex}", show_alert=True)
 
-# ===== المجموعات =====
 @app.on_callback_query(filters.regex(r"^(groups)$"))
 async def groupsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -463,7 +462,6 @@ async def delOnly(_: Client, callback: CallbackQuery):
     grp_id=callback.data.replace("delOnly_",""); db["groups"].pop(grp_id,None); db.get("channels",{}).pop(grp_id,None); save()
     await callback.message.edit_text("تم حذف من البوت فقط ✅", reply_markup=backMarkup)
 
-# ===== النشر =====
 @app.on_callback_query(filters.regex(r"^(posting)$"))
 async def postingMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
@@ -501,19 +499,21 @@ async def captionShow(_: Client, callback: CallbackQuery):
     txt="📋 الكلايش الحالية:\n\n"+"\n".join([f"{i}. {c}" for i,c in enumerate(caps,1)]) if caps else "ماكو كلايش"
     await callback.message.edit_text(txt, reply_markup=Markup([[Button("- العوده -", callback_data="toHome")]]))
 
+# ===== زر المدة - جديد: بين رسالة ورسالة فقط =====
 @app.on_callback_query(filters.regex(r"^(setDelay)$"))
 async def setDelay(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id; s=get_settings(uid); await callback.message.delete()
-    try: ask=await wait_input(uid, "ارسل المدة بالثواني." if not s["random_enabled"] else "ارسل هكذا: 60-120", timeout=60, reply_markup=ForceReply(selective=True))
+    try: ask=await wait_input(uid, "ارسل المدة بالثواني بين رسالة ورسالة." if not s["random_enabled"] else "ارسل هكذا: 10-30  (بين رسالة ورسالة عشوائي)", timeout=60, reply_markup=ForceReply(selective=True))
     except TimeOut: return await callback.message.reply("- انتهى الوقت.")
     if s["random_enabled"]:
-        try: a,b=ask.text.split("-"); s["delay_min"]=int(a); s["delay_max"]=int(b); save(); await ask.reply(f"تم: {a}-{b} 🎲", reply_markup=toHomeMarkup)
-        except: await ask.reply("ارسل 60-120")
+        try:
+            a,b=ask.text.split("-"); s["msg_min"]=int(a); s["msg_max"]=int(b); save(); await ask.reply(f"تم: عشوائي بين رسالة ورسالة {a}-{b} ثانية 🎲", reply_markup=toHomeMarkup)
+        except: await ask.reply("ارسل هكذا: 10-30")
     else:
-        try: d=int(ask.text); s["delay"]=d if d>=30 else 30; save(); await ask.reply(f"تم: {s['delay']} ثانية ✅", reply_markup=toHomeMarkup)
+        try:
+            d=int(ask.text); s["msg_delay"]=d if d>=1 else 1; save(); await ask.reply(f"تم: بين رسالة ورسالة {s['msg_delay']} ثانية ✅", reply_markup=toHomeMarkup)
         except: await ask.reply("ارسل رقم")
 
-# ===== الاعدادات =====
 @app.on_callback_query(filters.regex(r"^(autoSettings)$"))
 async def autoSettings(_: Client, callback: CallbackQuery):
     s=get_settings(callback.from_user.id)
@@ -537,7 +537,6 @@ async def toggleSetting(_: Client, callback: CallbackQuery):
     await callback.answer(f"{'تم التشغيل ✅' if s[key] else 'تم الاطفاء ❌'}", show_alert=True)
     await autoSettings(_, callback)
 
-# ===== ايقاف / تشغيل =====
 @app.on_callback_query(filters.regex(r"^(stopPost)$"))
 async def stopPostMenu(_: Client, callback: CallbackQuery):
     markup=Markup([[Button("- ⏹️ عادي -", callback_data="stopPostNormal")],[Button("- ⛔ اجباري طوارئ -", callback_data="stopPostForce")],[Button("- ✅ الغاء الاجباري -", callback_data="unblockList")],[Button("- العوده -", callback_data="posting")]])
@@ -655,19 +654,29 @@ def stop_all_acc(uid,acc_key):
     if key in posting_tasks: posting_tasks[key].cancel(); del posting_tasks[key]; return 1
     return 0
 
+# ===== النشر الجديد: كل حساب + كل مجموعة دفعة وحدة، بدون دورة، التخفي شغال =====
 async def posting_loop(uid):
+    s=get_settings(uid)
+    accs=s.get("last_post_accs",[k for k,v in db["accounts"].items() if v["owner"]==uid])
+    grps=s.get("last_post_groups",list(db["groups"].keys()))
+    tasks=[]
+    for acc_key in accs:
+        for grp_id in grps:
+            tasks.append(asyncio.create_task(posting_one_pair(uid, acc_key, grp_id)))
+    if tasks:
+        await asyncio.gather(*tasks)
+
+async def posting_one_pair(uid, acc_key, grp_id):
     while True:
         try:
+            if is_force(acc_key): return
+            if is_blocked(acc_key,grp_id): return
+            await send_one(uid,acc_key,grp_id)
             s=get_settings(uid)
-            accs=s.get("last_post_accs",[k for k,v in db["accounts"].items() if v["owner"]==uid])
-            grps=s.get("last_post_groups",list(db["groups"].keys()))
-            for acc_key in accs:
-                if is_force(acc_key): continue
-                for grp_id in grps:
-                    if is_blocked(acc_key,grp_id): continue
-                    await send_one(uid,acc_key,grp_id)
-                    await asyncio.sleep(random.randint(5,15))
-            delay=random.randint(s["delay_min"],s["delay_max"]) if s["random_enabled"] else s["delay"]
+            if s.get("random_enabled"):
+                delay = random.randint(int(s.get("msg_min",10)), int(s.get("msg_max",30)))
+            else:
+                delay = int(s.get("msg_delay",10))
             await asyncio.sleep(delay)
         except asyncio.CancelledError: break
         except Exception as e: print(e); await asyncio.sleep(10)
@@ -680,6 +689,7 @@ async def send_one(uid,acc_key,grp_id):
         try: me=await client.get_me()
         except: raise AuthKeyUnregistered("جلسة منتهية")
         caption_to_send=random.choice(s["captions"]) if s.get("caption_mode")=="multi" and s.get("captions") else s.get("caption","اهلا بكم 🔥")
+        # ===== التخفي - شغال =====
         is_reply=False
         if s.get("stealth_enabled"):
             ck=f"{acc_key}_{grp_id}"; c=stealth_counter.get(ck,0)
@@ -726,7 +736,6 @@ async def send_one(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن =====
 @app.on_callback_query(filters.regex(r"^(statics)$"))
 async def statics(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
@@ -1007,7 +1016,6 @@ async def reStartPosting():
 
 async def main():
     await app.start()
-    # تنظيف تلقائي - احذف البوت نفسه من المستخدمين اذا انحفظ بالغلط
     try:
         me = await app.get_me()
         bot_id = str(me.id)
