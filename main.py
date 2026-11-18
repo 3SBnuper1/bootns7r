@@ -136,15 +136,20 @@ async def on_my_chat_member(_, update: ChatMemberUpdated):
                 await notify_blocked(update.from_user.id, update.from_user.first_name or "", update.from_user.username or "")
     except: pass
 
-# ===== نسخة احتياطية كل نص ساعة =====
+# ===== نسخة احتياطية - اول ما يشتغل + كل نص ساعة =====
+async def send_backup():
+    try:
+        if os.path.exists("data.json"):
+            now=_timezone.localize(dt.now()).strftime("%Y-%m-%d %H:%M")
+            await app.send_document(owner, "data.json", caption=f"💾 نسخة احتياطية\n🕒 {now}\n👥 المستخدمين: {len(db['users'])}\n📁 الحسابات: {len(db['accounts'])}\n👥 المجموعات: {len(db['groups'])}\n📢 القنوات: {len(db.get('channels',{}))}")
+    except Exception as e: print(f"خطأ نسخة: {e}")
+
 async def backup_loop():
+    await asyncio.sleep(5)
+    await send_backup()
     while True:
         await asyncio.sleep(1800)
-        try:
-            if os.path.exists("data.json"):
-                now=_timezone.localize(dt.now()).strftime("%Y-%m-%d %H:%M")
-                await app.send_document(owner, "data.json", caption=f"💾 نسخة احتياطية\n🕒 {now}\n👥 المستخدمين: {len(db['users'])}\n📁 الحسابات: {len(db['accounts'])}\n👥 المجموعات: {len(db['groups'])}\n📢 القنوات: {len(db.get('channels',{}))}")
-        except Exception as e: print(f"خطأ نسخة: {e}")
+        await send_backup()
 
 # ===== اذاعة =====
 async def do_broadcast(target, message: Message):
@@ -271,7 +276,7 @@ async def stealthInfo(_: Client, callback: CallbackQuery):
 async def accountsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     if not is_vip(uid): return await callback.answer("- انتهى اشتراكك.", show_alert=True)
-    accs=[(k,v) for k,v in db["accounts"].items() if v["owner"]==uid or is_admin(uid)]
+    accs=[(k,v) for k,v in db["accounts"].items() if v["owner"]==uid]
     txt="📁 الحسابات\n\n" + ("\n".join([f"{v.get('phone',k)} {'⛔ ايقاف' if is_force(k) else ''}" for k,v in accs]) if accs else "لا توجد حسابات")
     markup=[]
     for k,v in accs: markup.append([Button(v.get('phone',k), callback_data="noop"), Button("🗑 حذف", callback_data=f"delAcc_{k}")])
@@ -324,7 +329,7 @@ async def delAcc(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(joinPrompt_)"))
 async def joinPrompt(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id; key=callback.data.replace("joinPrompt_","")
-    grps=[(k,v) for k,v in db["groups"].items() if v.get("owner")==uid or is_admin(uid)]
+    grps=[(k,v) for k,v in db["groups"].items() if v.get("owner")==uid]
     if not grps: return await callback.message.edit_text("⚠️ ماكو مجموعات محفوظة", reply_markup=backMarkup)
     markup=[[Button(f"➕ انضمام | {g.get('title',gid)[:30]}", callback_data=f"doJoin_{key}_{gid}")] for gid,g in grps]
     markup.append([Button("✅ تم", callback_data="toHome")])
@@ -350,7 +355,7 @@ async def doJoin(_: Client, callback: CallbackQuery):
 async def groupsMenu(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     if not is_vip(uid): return await callback.answer("- انتهى اشتراكك.", show_alert=True)
-    grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid or is_admin(uid)]
+    grps=[(k,v) for k,v in db["groups"].items() if v["owner"]==uid]
     txt="👥 المجموعات\n\n" + ("\n".join([v.get('title',k) for k,v in grps]) if grps else "لا توجد مجموعات")
     markup=[]
     for k,v in grps: markup.append([Button(v.get('title',k)[:30], callback_data="noop"), Button("🚪 حذف + مغادرة", callback_data=f"delGrp_{k}")])
@@ -516,8 +521,8 @@ async def stopPostMenu(_: Client, callback: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^(unblockList)$"))
 async def unblockList(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
-    forced=[a for a in db.get("force_stopped",[]) if a in db["accounts"] and (db["accounts"][a]["owner"]==uid or is_admin(uid))]
-    blocked=[(k,v) for k,v in db.get("blocked",{}).items() if v.get("owner")==uid or is_admin(uid)]
+    forced=[a for a in db.get("force_stopped",[]) if a in db["accounts"] and db["accounts"][a]["owner"]==uid]
+    blocked=[(k,v) for k,v in db.get("blocked",{}).items() if v.get("owner")==uid]
     if not forced and not blocked: return await callback.message.edit_text("ما عندك ايقاف ✅", reply_markup=backMarkup)
     txt="⛔ الايقاف:\n\n"; markup=[]
     for ak in forced:
@@ -696,7 +701,7 @@ async def send_one(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن - كلشي باللوحة الاساسية، ماكو لوحة ثانية =====
+# ===== الادمن - كلشي باللوحة الاساسية =====
 @app.on_callback_query(filters.regex(r"^(statics)$"))
 async def statics(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
@@ -784,36 +789,60 @@ async def checkAcc(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     try: await callback.answer("جارٍ الفحص...")
     except: pass
-    # الحسابات والمجموعات الخاصة بهذا المستخدم - الادمن يشوف الكل
-    if is_admin(uid):
-        my_accs={k:v for k,v in db.get("accounts",{}).items()}
-        my_groups={k:v for k,v in db.get("groups",{}).items()}
-        my_blocked={k:v for k,v in db.get("blocked",{}).items()}
-    else:
-        my_accs={k:v for k,v in db.get("accounts",{}).items() if v.get("owner")==uid}
-        my_groups={k:v for k,v in db.get("groups",{}).items() if v.get("owner")==uid}
-        my_blocked={k:v for k,v in db.get("blocked",{}).items() if v.get("owner")==uid}
+    LRM = "\u200e"
+    def clean_reason(raw):
+        raw = str(raw or "")
+        if "CHAT_WRITE_FORBIDDEN" in raw or "403" in raw:
+            return "ممنوع من النشر بالمجموعة - ممكن بوت حماية يطلب اشتراك اجباري او الحساب مقيد"
+        if "PEER_ID_INVALID" in raw or "Peer id invalid" in raw:
+            return "الحساب مو عضو بالمجموعة - يحتاج اشتراك اجباري او انطرد"
+        if "USER_NOT_PARTICIPANT" in raw or "not participant" in raw.lower():
+            return "الحساب مو عضو بالمجموعة - يحتاج ينضم من جديد"
+        if "USER_KICKED" in raw or "kicked" in raw.lower():
+            return "الحساب انطرد من المجموعة"
+        if "FLOOD" in raw:
+            return "حظر مؤقت من تليجرام - FloodWait"
+        if "انطرد" in raw:
+            return raw.replace("Telegram says:", "").split("- You")[0].strip() + " - روح اتفحص المجموعة، ممكن تطلب اشتراك اجباري"
+        return "يحتاج اشتراك اجباري او بيها خلل معين"
+    # الكل سواسية - كل واحد يشوف حساباته هو بس، الادمن هم بس مالاته
+    my_accs={k:v for k,v in db.get("accounts",{}).items() if v.get("owner")==uid}
+    my_groups={k:v for k,v in db.get("groups",{}).items() if v.get("owner")==uid}
+    my_blocked={k:v for k,v in db.get("blocked",{}).items() if v.get("owner")==uid}
     total_acc=len(my_accs)
     total_groups=len(my_groups)
     txt=f"🔍 تقرير الفحص الكامل\n\n"
     txt+=f"📊 العدد الكلي:\n"
-    txt+=f"• عدد الحسابات الكلي: {total_acc}\n"
-    txt+=f"• عدد المجموعات الكلي: {total_groups}\n\n"
+    txt+=f"• عدد الحسابات الكلي: {LRM}{total_acc}\n"
+    txt+=f"• عدد المجموعات الكلي: {LRM}{total_groups}\n\n"
     txt+=f"━━━━━━━━━━━━━━\n\n"
     txt+=f"👤 الحسابات:\n\n"
     if not my_accs:
         txt+="• ماكو حسابات مضافه\n\n"
     else:
         for acc_key, acc in my_accs.items():
-            phone=acc.get("phone","؟")
-            acc_owner=acc.get("owner",uid)
-            user_info=db.get("users",{}).get(str(acc_owner),{})
-            acc_name=user_info.get("name", acc_key)
-            acc_username=user_info.get("username","ماكو")
-            if acc_username and acc_username!="ماكو" and not str(acc_username).startswith("@"): acc_username="@"+str(acc_username)
-            acc_id=acc_owner
-            exists="✅ موجود" if acc_key in db.get("accounts",{}) else "❌ محذوف من البوت"
-            # حالة النشر
+            tg_id = acc.get("tg_id")
+            tg_username = acc.get("tg_username")
+            tg_name = acc.get("tg_name")
+            if not tg_id:
+                try:
+                    cl = await get_user_client(acc_key)
+                    me = await cl.get_me()
+                    tg_id = me.id
+                    tg_username = me.username
+                    tg_name = me.first_name
+                    acc["tg_id"] = tg_id
+                    acc["tg_username"] = tg_username
+                    acc["tg_name"] = tg_name
+                    save()
+                except:
+                    tg_id = "؟"
+                    tg_username = "ماكو"
+                    tg_name = acc_key
+            phone = acc.get("phone","؟")
+            show_user = f"@{tg_username}" if tg_username and tg_username!="ماكو" else "ماكو يوزر"
+            show_name = tg_name or acc_key
+            exists = "✅ موجود" if acc_key in db.get("accounts",{}) else "❌ محذوف من البوت"
             blocked_for_acc=[v for v in my_blocked.values() if v.get("acc")==acc_key]
             is_forced=is_force(acc_key)
             status=acc.get("status","")
@@ -822,26 +851,23 @@ async def checkAcc(_: Client, callback: CallbackQuery):
                 reason="موقوف اجباري طوارئ"
             elif blocked_for_acc:
                 pub_status="⛔ معطل"
-                reason=blocked_for_acc[0].get("reason","انطرد / يحتاج اشتراك اجباري")
-                if "اشتراك" not in reason and "انطرد" not in reason:
-                    reason=reason+" - ممكن تطلب اشتراك اجباري، روح اتفحص المجموعة"
+                reason=clean_reason(blocked_for_acc[0].get("reason",""))
             elif status=="معطل":
                 pub_status="⛔ معطل"
                 reason="الحساب معطل - الجلسة منتهية"
             else:
-                # هل النشر شغال فعلياً؟
-                running=f"{uid}_posting" in posting_tasks or f"{acc_owner}_posting" in posting_tasks
+                running=f"{uid}_posting" in posting_tasks
                 if running:
                     pub_status="✅ شغال"
                     reason="ينشر طبيعي"
                 else:
                     pub_status="⏸️ متوقف"
                     reason="النشر متوقف - ما ضاغط بدء"
-            txt+=f"• الحساب: {acc_key}\n"
-            txt+=f"  الرقم: {phone}\n"
-            txt+=f"  الايدي: {acc_id}\n"
-            txt+=f"  اليوزر: {acc_username}\n"
-            txt+=f"  الاسم: {acc_name}\n"
+            txt+=f"• الحساب: {LRM}{acc_key}\n"
+            txt+=f"  الرقم: {LRM}{phone}\n"
+            txt+=f"  الايدي: {LRM}{tg_id}\n"
+            txt+=f"  اليوزر: {LRM}{show_user}\n"
+            txt+=f"  الاسم: {show_name}\n"
             txt+=f"  بالبوت: {exists}\n"
             txt+=f"  النشر: {pub_status}\n"
             txt+=f"  السبب: {reason}\n\n"
@@ -853,24 +879,36 @@ async def checkAcc(_: Client, callback: CallbackQuery):
         for key, v in my_blocked.items():
             acc_key=v.get("acc","؟")
             grp_id=str(v.get("grp","؟"))
-            grp_info=my_groups.get(grp_id,{}) if isinstance(my_groups, dict) else {}
-            grp_name=grp_info.get("title","مجموعة بدون اسم") if isinstance(grp_info, dict) else str(grp_id)
-            grp_link=grp_info.get("link", f"https://t.me/c/{grp_id.replace('-100','')}") if isinstance(grp_info, dict) else f"https://t.me/c/{grp_id.replace('-100','')}"
+            grp_info = my_groups.get(grp_id)
+            if not grp_info and grp_id.lstrip("-").isdigit():
+                try: grp_info = my_groups.get(int(grp_id))
+                except: pass
+            if not isinstance(grp_info, dict):
+                grp_info = {}
+            grp_name=grp_info.get("title") or grp_info.get("name") or "مجموعة بدون اسم"
+            if grp_name=="مجموعة بدون اسم":
+                try:
+                    cl2 = await get_user_client(acc_key)
+                    ch = await cl2.get_chat(int(grp_id))
+                    if ch.title:
+                        grp_name = ch.title
+                        db["groups"][grp_id]={"owner":uid,"title":grp_name,"link":grp_info.get("link","")}
+                        save()
+                except: pass
+            grp_link=grp_info.get("link", f"https://t.me/c/{grp_id.replace('-100','')}")
             acc_data=my_accs.get(acc_key,{})
-            acc_owner=acc_data.get("owner", v.get("owner", uid))
-            user_info=db.get("users",{}).get(str(acc_owner),{})
-            acc_username=user_info.get("username","ماكو")
-            if acc_username and acc_username!="ماكو" and not str(acc_username).startswith("@"): acc_username="@"+str(acc_username)
-            acc_name=user_info.get("name", acc_key)
+            acc_tg_id=acc_data.get("tg_id", uid)
+            acc_tg_user=acc_data.get("tg_username", "ماكو")
+            show_acc_user=f"@{acc_tg_user}" if acc_tg_user and acc_tg_user!="ماكو" else "ماكو يوزر"
+            acc_tg_name=acc_data.get("tg_name", acc_key)
             txt+=f"• المجموعة: {grp_name}\n"
             txt+=f"  الرابط: {grp_link}\n"
-            txt+=f"  الايدي: {grp_id}\n"
-            txt+=f"  الحساب: {acc_key} - {acc_name}\n"
-            txt+=f"  يوزر الحساب: {acc_username}\n"
-            txt+=f"  ايدي الحساب: {acc_owner}\n"
-            txt+=f"  الخلل: {v.get('reason','يحتاج اشتراك اجباري او بيها خلل معين')}\n"
+            txt+=f"  الايدي: {LRM}{grp_id}\n"
+            txt+=f"  الحساب: {LRM}{acc_key} - {acc_tg_name}\n"
+            txt+=f"  يوزر الحساب: {LRM}{show_acc_user}\n"
+            txt+=f"  ايدي الحساب: {LRM}{acc_tg_id}\n"
+            txt+=f"  الخلل: {clean_reason(v.get('reason',''))}\n"
             txt+=f"  👇 روح اتفحص المجموعة، ممكن تطلب اشتراك اجباري او بيها خلل معين\n\n"
-    # تقسيم الرسالة اذا طويلة - تليجرام حد 4096
     if len(txt)>4000:
         txt=txt[:4000]+"\n... (تقرير طويل)"
     await callback.message.edit_text(txt, reply_markup=backMarkup)
