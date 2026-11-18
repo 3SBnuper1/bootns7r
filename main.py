@@ -26,7 +26,7 @@ async def wait_input(uid, text, timeout=60, reply_markup=None):
     finally:
         waiting.pop(uid, None)
 
-@app.on_message(filters.private & ~filters.command(["start","admin"]), group=-1)
+@app.on_message(filters.private & ~filters.command(["start"]), group=-1)
 async def _on_wait(_, message: Message):
     uid = message.from_user.id
     if uid in waiting and not waiting[uid].done():
@@ -86,7 +86,10 @@ def is_cancel(text): return text and text.strip().lower() in ["/cancel","cancel"
 
 def mainMarkup(uid):
     r=[[Button("- 📁 الحسابات -", callback_data="accounts")],[Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],[Button("- 👥 احالتي 🎁 -", callback_data="myRef"), Button("- 🥷 التخفي -", callback_data="stealthInfo")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]]
-    if is_admin(uid): r.append([Button("- 📊 احصائيات -", callback_data="statics"), Button("- 👑 VIP -", callback_data="vipAdmin")])
+    if is_admin(uid):
+        r.append([Button("- ➕ تفعيل VIP -", callback_data="vipAdd"), Button("- ➖ الغاء VIP -", callback_data="vipDel")])
+        r.append([Button("- 📋 قائمة VIP -", callback_data="vipList"), Button("- 📢 اشتراك اجباري -", callback_data="vipForced")])
+        r.append([Button("- 📊 احصائيات -", callback_data="statics"), Button("- 📢 اذاعة -", callback_data="broadcastMenu")])
     r.append([Button("- 👑 اشتراكي -", callback_data="checkMyVip"), Button("- 🔍 فحص -", callback_data="checkAcc")])
     return Markup(r)
 refMarkup = Markup([[Button("- احالتي 🎁 -", callback_data="myRef")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]])
@@ -693,11 +696,7 @@ async def send_one(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن =====
-@app.on_message(filters.command("admin") & filters.private & filters.user(owner))
-async def adminCmd(_: Client, message: Message):
-    await message.reply(f"مرحبا عزيزي في لوحة المالك", reply_markup=Markup([[Button("- الغاء VIP -", callback_data="vipDel"), Button("- تفعيل VIP -", callback_data="vipAdd")],[Button("- الاحصائيات -", callback_data="statics"), Button("- قناة الاشتراك -", callback_data="vipForced")],[Button("- 📢 اذاعة -", callback_data="broadcastMenu")]]))
-
+# ===== الادمن - كلشي باللوحة الاساسية، ماكو لوحة ثانية =====
 @app.on_callback_query(filters.regex(r"^(statics)$"))
 async def statics(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
@@ -705,12 +704,6 @@ async def statics(_: Client, callback: CallbackQuery):
     total_forced=await get_forced_total()
     caption=f"- عدد المستخدمين: {len(db['users'])}\n- عدد الحسابات: {len(db['accounts'])}\n- عدد المجموعات: {len(db['groups'])}\n- عدد القنوات: {len(db.get('channels',{}))}\n- شغال: {len(posting_tasks)}\n- اليوم: {stats_today['count']}\n- 📢 اجباري: {ch}\n- 👥 مشتركين القناة الكلي: {total_forced}\n- 🚫 اللي حظروا البوت: {len(db.get('blocked_users',[]))}\n- VIP: {len(db['vip'])}"
     await callback.message.edit_text(caption, reply_markup=Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]]))
-
-@app.on_callback_query(filters.regex(r"^(vipAdmin)$"))
-async def vipAdmin(_: Client, callback: CallbackQuery):
-    if callback.from_user.id!=owner: return
-    markup=Markup([[Button("➕ تفعيل VIP", callback_data="vipAdd"), Button("➖ الغاء VIP", callback_data="vipDel")],[Button("📋 قائمة VIP", callback_data="vipList"), Button("📢 اشتراك اجباري", callback_data="vipForced")],[Button("📢 اذاعة", callback_data="broadcastMenu")],[Button("- العوده -", callback_data="toHome")]])
-    await callback.message.edit_text("👑 VIP", reply_markup=markup)
 
 @app.on_callback_query(filters.regex(r"^(broadcastMenu)$"))
 async def broadcastMenu(_: Client, callback: CallbackQuery):
@@ -788,11 +781,98 @@ async def checkMyVip(_: Client, callback: CallbackQuery):
 
 @app.on_callback_query(filters.regex(r"^(checkAcc)$"))
 async def checkAcc(_: Client, callback: CallbackQuery):
-    uid=callback.from_user.id; txt="🔍 فحص:\n\n"
-    for k,v in db["accounts"].items():
-        if v["owner"]!=uid and not is_admin(uid): continue
-        running=f"{uid}_posting" in posting_tasks
-        txt+=f"{v.get('phone',k)} - {'شغال ✅' if running else 'متوقف ⏹️'}{' ⛔ ايقاف' if is_force(k) else ''}\n"
+    uid=callback.from_user.id
+    try: await callback.answer("جارٍ الفحص...")
+    except: pass
+    # الحسابات والمجموعات الخاصة بهذا المستخدم - الادمن يشوف الكل
+    if is_admin(uid):
+        my_accs={k:v for k,v in db.get("accounts",{}).items()}
+        my_groups={k:v for k,v in db.get("groups",{}).items()}
+        my_blocked={k:v for k,v in db.get("blocked",{}).items()}
+    else:
+        my_accs={k:v for k,v in db.get("accounts",{}).items() if v.get("owner")==uid}
+        my_groups={k:v for k,v in db.get("groups",{}).items() if v.get("owner")==uid}
+        my_blocked={k:v for k,v in db.get("blocked",{}).items() if v.get("owner")==uid}
+    total_acc=len(my_accs)
+    total_groups=len(my_groups)
+    txt=f"🔍 تقرير الفحص الكامل\n\n"
+    txt+=f"📊 العدد الكلي:\n"
+    txt+=f"• عدد الحسابات الكلي: {total_acc}\n"
+    txt+=f"• عدد المجموعات الكلي: {total_groups}\n\n"
+    txt+=f"━━━━━━━━━━━━━━\n\n"
+    txt+=f"👤 الحسابات:\n\n"
+    if not my_accs:
+        txt+="• ماكو حسابات مضافه\n\n"
+    else:
+        for acc_key, acc in my_accs.items():
+            phone=acc.get("phone","؟")
+            acc_owner=acc.get("owner",uid)
+            user_info=db.get("users",{}).get(str(acc_owner),{})
+            acc_name=user_info.get("name", acc_key)
+            acc_username=user_info.get("username","ماكو")
+            if acc_username and acc_username!="ماكو" and not str(acc_username).startswith("@"): acc_username="@"+str(acc_username)
+            acc_id=acc_owner
+            exists="✅ موجود" if acc_key in db.get("accounts",{}) else "❌ محذوف من البوت"
+            # حالة النشر
+            blocked_for_acc=[v for v in my_blocked.values() if v.get("acc")==acc_key]
+            is_forced=is_force(acc_key)
+            status=acc.get("status","")
+            if is_forced:
+                pub_status="⛔ معطل"
+                reason="موقوف اجباري طوارئ"
+            elif blocked_for_acc:
+                pub_status="⛔ معطل"
+                reason=blocked_for_acc[0].get("reason","انطرد / يحتاج اشتراك اجباري")
+                if "اشتراك" not in reason and "انطرد" not in reason:
+                    reason=reason+" - ممكن تطلب اشتراك اجباري، روح اتفحص المجموعة"
+            elif status=="معطل":
+                pub_status="⛔ معطل"
+                reason="الحساب معطل - الجلسة منتهية"
+            else:
+                # هل النشر شغال فعلياً؟
+                running=f"{uid}_posting" in posting_tasks or f"{acc_owner}_posting" in posting_tasks
+                if running:
+                    pub_status="✅ شغال"
+                    reason="ينشر طبيعي"
+                else:
+                    pub_status="⏸️ متوقف"
+                    reason="النشر متوقف - ما ضاغط بدء"
+            txt+=f"• الحساب: {acc_key}\n"
+            txt+=f"  الرقم: {phone}\n"
+            txt+=f"  الايدي: {acc_id}\n"
+            txt+=f"  اليوزر: {acc_username}\n"
+            txt+=f"  الاسم: {acc_name}\n"
+            txt+=f"  بالبوت: {exists}\n"
+            txt+=f"  النشر: {pub_status}\n"
+            txt+=f"  السبب: {reason}\n\n"
+    txt+=f"━━━━━━━━━━━━━━\n\n"
+    txt+=f"👥 المجموعات اللي بيها خلل:\n\n"
+    if not my_blocked:
+        txt+="✅ ماكو مجموعات بيها خلل، كلهن شغالات\n"
+    else:
+        for key, v in my_blocked.items():
+            acc_key=v.get("acc","؟")
+            grp_id=str(v.get("grp","؟"))
+            grp_info=my_groups.get(grp_id,{}) if isinstance(my_groups, dict) else {}
+            grp_name=grp_info.get("title","مجموعة بدون اسم") if isinstance(grp_info, dict) else str(grp_id)
+            grp_link=grp_info.get("link", f"https://t.me/c/{grp_id.replace('-100','')}") if isinstance(grp_info, dict) else f"https://t.me/c/{grp_id.replace('-100','')}"
+            acc_data=my_accs.get(acc_key,{})
+            acc_owner=acc_data.get("owner", v.get("owner", uid))
+            user_info=db.get("users",{}).get(str(acc_owner),{})
+            acc_username=user_info.get("username","ماكو")
+            if acc_username and acc_username!="ماكو" and not str(acc_username).startswith("@"): acc_username="@"+str(acc_username)
+            acc_name=user_info.get("name", acc_key)
+            txt+=f"• المجموعة: {grp_name}\n"
+            txt+=f"  الرابط: {grp_link}\n"
+            txt+=f"  الايدي: {grp_id}\n"
+            txt+=f"  الحساب: {acc_key} - {acc_name}\n"
+            txt+=f"  يوزر الحساب: {acc_username}\n"
+            txt+=f"  ايدي الحساب: {acc_owner}\n"
+            txt+=f"  الخلل: {v.get('reason','يحتاج اشتراك اجباري او بيها خلل معين')}\n"
+            txt+=f"  👇 روح اتفحص المجموعة، ممكن تطلب اشتراك اجباري او بيها خلل معين\n\n"
+    # تقسيم الرسالة اذا طويلة - تليجرام حد 4096
+    if len(txt)>4000:
+        txt=txt[:4000]+"\n... (تقرير طويل)"
     await callback.message.edit_text(txt, reply_markup=backMarkup)
 
 @app.on_callback_query(filters.regex(r"^(noop)$"))
