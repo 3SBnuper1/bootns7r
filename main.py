@@ -28,6 +28,9 @@ async def wait_input(uid, text, timeout=60, reply_markup=None):
 
 @app.on_message(filters.private & ~filters.command(["start"]), group=-1)
 async def _on_wait(_, message: Message):
+    # تجاهل رسائل البوتات
+    if message.from_user and message.from_user.is_bot:
+        return
     uid = message.from_user.id
     if uid in waiting and not waiting[uid].done():
         waiting[uid].set_result(message)
@@ -113,6 +116,12 @@ async def get_forced_total():
         except: return 0
 
 async def notify_subscribed(uid, first_name, username):
+    # لا تحسب البوت نفسه
+    try:
+        me = await app.get_me()
+        if uid == me.id:
+            return
+    except: pass
     if str(uid) in db.get("subscribed",[]): return
     db.setdefault("subscribed",[]).append(str(uid)); save()
     total=await get_forced_total()
@@ -120,6 +129,11 @@ async def notify_subscribed(uid, first_name, username):
     except: pass
 
 async def notify_blocked(uid, first_name, username):
+    try:
+        me = await app.get_me()
+        if uid == me.id:
+            return
+    except: pass
     if str(uid) in db.get("blocked_users",[]): return
     db.setdefault("blocked_users",[]).append(str(uid)); save()
     if str(uid) in db.get("subscribed",[]): db["subscribed"].remove(str(uid)); save()
@@ -131,6 +145,8 @@ async def notify_blocked(uid, first_name, username):
 async def on_my_chat_member(_, update: ChatMemberUpdated):
     try:
         if update.chat.type.value=="private" or str(update.chat.type)=="private":
+            if update.from_user.is_bot:
+                return
             new_status=update.new_chat_member.status.value if hasattr(update.new_chat_member.status,"value") else str(update.new_chat_member.status)
             if new_status in ["kicked","left"] and update.from_user.id!=owner:
                 await notify_blocked(update.from_user.id, update.from_user.first_name or "", update.from_user.username or "")
@@ -193,7 +209,16 @@ async def subscription(message):
 # ===== START =====
 @app.on_message(filters.command("start") & filters.private)
 async def start(_: Client, message: Message):
+    # اذا اللي داز هو بوت، تجاهله تماما - هذا هو حل مشكلة البوت يحسب نفسه مستخدم
+    if message.from_user.is_bot:
+        return
     uid=message.from_user.id
+    # اذا الايدي هو ايدي البوت نفسه، تجاهله
+    try:
+        me = await app.get_me()
+        if uid == me.id:
+            return
+    except: pass
     ref=None
     if len(message.command)>1 and message.command[1].startswith("ref_"): ref=message.command[1].replace("ref_","")
     is_new=str(uid) not in db["users"]
@@ -701,7 +726,7 @@ async def send_one(uid,acc_key,grp_id):
         if s["protect_enabled"]: await app.send_message(uid, f"⚠️ خطأ نشر {acc_key}: {e}")
         return False
 
-# ===== الادمن - كلشي باللوحة الاساسية =====
+# ===== الادمن =====
 @app.on_callback_query(filters.regex(r"^(statics)$"))
 async def statics(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
@@ -805,7 +830,6 @@ async def checkAcc(_: Client, callback: CallbackQuery):
         if "انطرد" in raw:
             return raw.replace("Telegram says:", "").split("- You")[0].strip() + " - روح اتفحص المجموعة، ممكن تطلب اشتراك اجباري"
         return "يحتاج اشتراك اجباري او بيها خلل معين"
-    # الكل سواسية - كل واحد يشوف حساباته هو بس، الادمن هم بس مالاته
     my_accs={k:v for k,v in db.get("accounts",{}).items() if v.get("owner")==uid}
     my_groups={k:v for k,v in db.get("groups",{}).items() if v.get("owner")==uid}
     my_blocked={k:v for k,v in db.get("blocked",{}).items() if v.get("owner")==uid}
@@ -935,7 +959,6 @@ async def vip_checker():
             except: pass
         await asyncio.sleep(3600)
 
-# ===== تقرير يومي: لكل VIP تقريره + للادمن الكل =====
 async def daily_report():
     while True:
         await asyncio.sleep(60)
@@ -983,7 +1006,33 @@ async def reStartPosting():
             if key not in posting_tasks: posting_tasks[key]=asyncio.create_task(posting_loop(int(uid)))
 
 async def main():
+    await app.start()
+    # تنظيف تلقائي - احذف البوت نفسه من المستخدمين اذا انحفظ بالغلط
+    try:
+        me = await app.get_me()
+        bot_id = str(me.id)
+        cleaned = False
+        if bot_id in db.get("users", {}):
+            del db["users"][bot_id]
+            cleaned = True
+        if bot_id in db.get("subscribed", []):
+            db["subscribed"].remove(bot_id)
+            cleaned = True
+        if bot_id in db.get("blocked_users", []):
+            db["blocked_users"].remove(bot_id)
+            cleaned = True
+        if bot_id in db.get("vip", {}):
+            del db["vip"][bot_id]
+            cleaned = True
+        if bot_id in db.get("settings", {}):
+            del db["settings"][bot_id]
+            cleaned = True
+        if cleaned:
+            save()
+            print(f"تم حذف البوت {bot_id} من المستخدمين")
+    except Exception as e:
+        print(f"خطأ تنظيف البوت: {e}")
     asyncio.create_task(reStartPosting()); asyncio.create_task(vip_checker()); asyncio.create_task(daily_report()); asyncio.create_task(backup_loop())
-    await app.start(); await idle()
+    await idle()
 if __name__=="__main__":
     loop.run_until_complete(main())
