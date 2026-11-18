@@ -1,7 +1,7 @@
 import asyncio, json, os, random
 from pyrogram import Client, filters, idle
-from pyrogram.types import Message, CallbackQuery, ForceReply, InlineKeyboardMarkup as Markup, InlineKeyboardButton as Button
-from pyrogram.errors import PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked
+from pyrogram.types import Message, CallbackQuery, ForceReply, InlineKeyboardMarkup as Markup, InlineKeyboardButton as Button, ChatMemberUpdated
+from pyrogram.errors import PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded, PasswordHashInvalid, UserNotParticipant, FloodWait, UserDeactivated, AuthKeyUnregistered, SessionRevoked, UserIsBlocked, BotBlocked
 from datetime import datetime as dt, timedelta
 from pytz import timezone
 
@@ -38,9 +38,12 @@ def write(fp, data):
     with open(fp, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
 def read(fp):
     if not os.path.exists(fp):
-        write(fp, {"users":{},"accounts":{},"groups":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{}})
+        write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{},"blocked_users":[],"channels":{},"stats_per_user":{},"last_report_date":None})
     with open(fp, encoding="utf-8") as f: return json.load(f)
 db = read("data.json")
+# توافق مع الملف القديم
+for _k,_v in {"channels":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None}.items():
+    if _k not in db: db[_k]=_v
 def save(): write("data.json", db)
 
 def get_settings(uid):
@@ -80,6 +83,7 @@ def unforce_acc(acc):
 def bkey(a,g): return f"{a}__{g}"
 def is_blocked(a,g): return bkey(a,g) in db.get("blocked",{})
 def t(v): return "✅ مفعل" if v else "❌ معطل"
+def is_cancel(text): return text and text.strip().lower() in ["/cancel","cancel","الغاء"]
 
 def mainMarkup(uid):
     r=[[Button("- 📁 الحسابات -", callback_data="accounts")],[Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],[Button("- 👥 احالتي 🎁 -", callback_data="myRef"), Button("- 🥷 التخفي -", callback_data="stealthInfo")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]]
@@ -94,6 +98,74 @@ posting_tasks = {}
 account_clients = {}
 stats_today = {"count":0}
 stealth_counter = {}
+
+# ===== جديد: اشعار اشتراك + حظر + عدد المشتركين الكلي =====
+async def get_forced_total():
+    ch=get_forced()
+    if not ch: return 0
+    try: return await app.get_chat_members_count(ch)
+    except:
+        try:
+            chat=await app.get_chat(ch)
+            return getattr(chat,"members_count",0) or 0
+        except: return 0
+
+async def notify_subscribed(uid, first_name, username):
+    if str(uid) in db.get("subscribed",[]): return
+    db.setdefault("subscribed",[]).append(str(uid)); save()
+    total=await get_forced_total()
+    try: await app.send_message(owner, f"✅ واحد اشترك بالقناة الاجبارية\n\n🆔 {uid}\n👤 الاسم: {first_name or ''}\n🔗 اليوزر: @{username or 'ماكو'}\n📊 عدد المشتركين الكلي بالقناة: {total}\n📊 عدد مستخدمين البوت: {len(db['users'])}")
+    except: pass
+
+async def notify_blocked(uid, first_name, username):
+    if str(uid) in db.get("blocked_users",[]): return
+    db.setdefault("blocked_users",[]).append(str(uid)); save()
+    if str(uid) in db.get("subscribed",[]): db["subscribed"].remove(str(uid)); save()
+    blocked_count=len(db.get("blocked_users",[])); remaining=len(db["users"])-blocked_count
+    try: await app.send_message(owner, f"🚫 واحد حظر البوت\n\n🆔 {uid}\n👤 الاسم: {first_name or ''}\n🔗 اليوزر: @{username or 'ماكو'}\n\n📊 اللي حظروا البوت: {blocked_count}\n📊 المستخدمين الباقين: {remaining}")
+    except: pass
+
+@app.on_my_chat_member()
+async def on_my_chat_member(_, update: ChatMemberUpdated):
+    try:
+        if update.chat.type.value=="private" or str(update.chat.type)=="private":
+            new_status=update.new_chat_member.status.value if hasattr(update.new_chat_member.status,"value") else str(update.new_chat_member.status)
+            if new_status in ["kicked","left"] and update.from_user.id!=owner:
+                await notify_blocked(update.from_user.id, update.from_user.first_name or "", update.from_user.username or "")
+    except: pass
+
+# ===== جديد: نسخة احتياطية كل نص ساعة =====
+async def backup_loop():
+    while True:
+        await asyncio.sleep(1800)
+        try:
+            if os.path.exists("data.json"):
+                now=_timezone.localize(dt.now()).strftime("%Y-%m-%d %H:%M")
+                await app.send_document(owner, "data.json", caption=f"💾 نسخة احتياطية\n🕒 {now}\n👥 المستخدمين: {len(db['users'])}\n📁 الحسابات: {len(db['accounts'])}\n👥 المجموعات: {len(db['groups'])}\n📢 القنوات: {len(db.get('channels',{}))}")
+        except Exception as e: print(f"خطأ نسخة: {e}")
+
+# ===== جديد: اذاعة =====
+async def do_broadcast(target, message: Message):
+    sent=0; failed=0; blocked_now=[]
+    targets=[]
+    if target=="users": targets=[int(k) for k in db["users"].keys() if k not in db.get("blocked_users",[])]
+    elif target=="groups": targets=[int(k) for k in db["groups"].keys()]
+    elif target=="channels": targets=[int(k) for k in db.get("channels",{}).keys()]
+    elif target=="all": targets=[int(k) for k in db["users"].keys() if k not in db.get("blocked_users",[])] + [int(k) for k in db["groups"].keys()] + [int(k) for k in db.get("channels",{}).keys()]
+    for tid in targets:
+        try:
+            if message.photo: await app.send_photo(tid, message.photo.file_id, caption=message.caption or "")
+            elif message.video: await app.send_video(tid, message.video.file_id, caption=message.caption or "")
+            elif message.text: await app.send_message(tid, message.text)
+            else: await message.copy(tid)
+            sent+=1
+        except (BotBlocked, UserIsBlocked):
+            failed+=1
+            if str(tid) not in db.get("blocked_users",[]) and tid>0: blocked_now.append(tid)
+        except: failed+=1
+        await asyncio.sleep(0.05)
+    for tid in blocked_now: await notify_blocked(tid, db["users"].get(str(tid),{}).get("name",""), db["users"].get(str(tid),{}).get("username",""))
+    return sent, failed
 
 async def get_user_client(acc_key):
     if acc_key in account_clients:
@@ -119,6 +191,9 @@ async def start(_: Client, message: Message):
     if len(message.command)>1 and message.command[1].startswith("ref_"): ref=message.command[1].replace("ref_","")
     is_new=str(uid) not in db["users"]
     db["users"][str(uid)]={"name":message.from_user.first_name or "","username":message.from_user.username or "","id":uid}; save()
+    if is_new:
+        try: await app.send_message(owner,f"👤 مستخدم جديد دخل البوت\n\n🆔 {uid}\n👤 الاسم: {message.from_user.first_name or ''}\n🔗 اليوزر: @{message.from_user.username or 'ماكو'}\n📊 العدد الكلي: {len(db['users'])}")
+        except: pass
     if is_new and ref and ref!=str(uid) and ref in db["users"]:
         db.setdefault("referrals",{})
         if ref not in db["referrals"]: db["referrals"][ref]={"invited":[],"rewarded":False}
@@ -140,6 +215,7 @@ async def start(_: Client, message: Message):
     sub=await subscription(message)
     if isinstance(sub, str):
         return await message.reply(f"- اشترك بقناة البوت اولاً:\n{sub}\nبعدها ارسل /start")
+    await notify_subscribed(uid, message.from_user.first_name or "", message.from_user.username or "")
     if not is_vip(uid):
         return await message.reply(f"❌ غير مشترك VIP\nراسل المطور: {DEV}\n\n🎁 او جيب 3 اشخاص من رابطك وتاخذ يوم VIP مجاني!", reply_markup=refMarkup)
     await message.reply("- مرحبا بك في بوت النشر التلقائي", reply_markup=mainMarkup(uid))
@@ -148,6 +224,7 @@ async def start(_: Client, message: Message):
 async def toHome(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     if not is_vip(uid): return await callback.answer("- انتهى اشتراكك.", show_alert=True)
+    await notify_subscribed(uid, callback.from_user.first_name or "", callback.from_user.username or "")
     await callback.message.edit_text("- مرحبا بك في بوت النشر التلقائي", reply_markup=mainMarkup(uid))
 
 @app.on_callback_query(filters.regex(r"^(aboutBot)$"))
@@ -292,7 +369,7 @@ async def addGrpChooseAcc(_: Client, callback: CallbackQuery):
 async def addGrpAsk(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id
     await callback.message.delete()
-    try: ask=await wait_input(uid, "- ارسل رابط السوبر لإضافته.\n- يمكنك ارسال /cancel للالغاء.", timeout=60, reply_markup=ForceReply(selective=True))
+    try: ask=await wait_input(uid, "- ارسل رابط السوبر / القناة لإضافته.\n- يمكنك ارسال /cancel للالغاء.", timeout=60, reply_markup=ForceReply(selective=True))
     except TimeOut: return await callback.message.reply("نفد وقت الرابط", reply_markup=backMarkup)
     if ask.text=="/cancel": return await ask.reply("- تم الالغاء.")
     asyncio.create_task(add_group_logic(ask, callback.data))
@@ -306,7 +383,7 @@ async def add_group_logic(message, chosen):
     else:
         accs=[(k,v) for k,v in db["accounts"].items() if v["owner"]==uid]; mode_txt="لجميع الحسابات"
     await message.reply(f"جاري دخول {mode_txt} ... ⏳")
-    joined=0; skipped=0; failed=""; gid_final=None; title_final=link
+    joined=0; skipped=0; failed=""; gid_final=None; title_final=link; is_channel=False
     for ak,acc in accs:
         try:
             client=await get_user_client(ak)
@@ -318,9 +395,12 @@ async def add_group_logic(message, chosen):
                     except: continue
                 else: failed+=f"\n{acc.get('phone')}: {e}"; continue
             gid_final=str(chat.id); title_final=chat.title or link; joined+=1
+            if str(chat.type).lower().find("channel")!=-1: is_channel=True
         except Exception as ex: failed+=f"\n{acc.get('phone')}: {ex}"
     if not gid_final: return await message.reply(f"❌ فشل\n{failed}", reply_markup=mainMarkup(uid))
-    db["groups"][gid_final]={"owner":uid,"title":title_final,"link":link}; save()
+    if is_channel: db.setdefault("channels",{})[gid_final]={"owner":uid,"title":title_final,"link":link}
+    else: db["groups"][gid_final]={"owner":uid,"title":title_final,"link":link}
+    save()
     await message.reply(f"تم ✅ ({mode_txt})\n✅ دخل: {joined}\n⏭️ موجود: {skipped}\n🆔 {gid_final}\n{failed}", reply_markup=mainMarkup(uid))
 
 @app.on_callback_query(filters.regex(r"^(delGrp_)"))
@@ -343,12 +423,12 @@ async def leaveGrp(_: Client, callback: CallbackQuery):
             client=await get_user_client(a)
             stop_post(uid,a,grp_id); await client.leave_chat(int(grp_id)); ok+=1
         except: fail+=1
-    db["groups"].pop(grp_id,None); save()
+    db["groups"].pop(grp_id,None); db.get("channels",{}).pop(grp_id,None); save()
     await callback.message.edit_text(f"تم ✅\n🚪 غادر: {ok}\n❌ فشل: {fail}\n{title}", reply_markup=backMarkup)
 
 @app.on_callback_query(filters.regex(r"^(delOnly_)"))
 async def delOnly(_: Client, callback: CallbackQuery):
-    grp_id=callback.data.replace("delOnly_",""); db["groups"].pop(grp_id,None); save()
+    grp_id=callback.data.replace("delOnly_",""); db["groups"].pop(grp_id,None); db.get("channels",{}).pop(grp_id,None); save()
     await callback.message.edit_text("تم حذف من البوت فقط ✅", reply_markup=backMarkup)
 
 # ===== النشر =====
@@ -584,13 +664,13 @@ async def send_one(uid,acc_key,grp_id):
                         await client.send_photo(int(grp_id), s["media_file"], caption=caption_to_send, reply_to_message_id=target.id)
                     else:
                         await client.send_message(int(grp_id), caption_to_send, reply_to_message_id=target.id)
-                    stats_today["count"]+=1; return True
+                    stats_today["count"]+=1; db.setdefault("stats_per_user",{})[str(uid)]=db["stats_per_user"].get(str(uid),0)+1; save(); return True
             except: pass
         if s["media_enabled"] and s["media_file"] and os.path.exists(s["media_file"]):
             await client.send_photo(int(grp_id), s["media_file"], caption=caption_to_send)
         else:
             await client.send_message(int(grp_id), caption_to_send)
-        stats_today["count"]+=1; return True
+        stats_today["count"]+=1; db.setdefault("stats_per_user",{})[str(uid)]=db["stats_per_user"].get(str(uid),0)+1; save(); return True
     except FloodWait as e:
         if s["protect_enabled"]: await app.send_message(owner, f"🛡️ FloodWait {e.value}")
         await asyncio.sleep(e.value+5); return False
@@ -617,20 +697,39 @@ async def send_one(uid,acc_key,grp_id):
 # ===== الادمن - VIP و احصائيات - بدون تكرار =====
 @app.on_message(filters.command("admin") & filters.private & filters.user(owner))
 async def adminCmd(_: Client, message: Message):
-    await message.reply(f"مرحبا عزيزي في لوحة المالك", reply_markup=Markup([[Button("- الغاء VIP -", callback_data="vipDel"), Button("- تفعيل VIP -", callback_data="vipAdd")],[Button("- الاحصائيات -", callback_data="statics"), Button("- قناة الاشتراك -", callback_data="vipForced")]]))
+    await message.reply(f"مرحبا عزيزي في لوحة المالك", reply_markup=Markup([[Button("- الغاء VIP -", callback_data="vipDel"), Button("- تفعيل VIP -", callback_data="vipAdd")],[Button("- الاحصائيات -", callback_data="statics"), Button("- قناة الاشتراك -", callback_data="vipForced")],[Button("- 📢 اذاعة -", callback_data="broadcastMenu")]]))
 
 @app.on_callback_query(filters.regex(r"^(statics)$"))
 async def statics(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
     ch=get_forced() or "مو مفعل"
-    caption=f"- عدد المستخدمين: {len(db['users'])}\n- عدد الحسابات: {len(db['accounts'])}\n- عدد المجموعات: {len(db['groups'])}\n- شغال: {len(posting_tasks)}\n- اليوم: {stats_today['count']}\n- 📢 اجباري: {ch}\n- VIP: {len(db['vip'])}"
+    total_forced=await get_forced_total()
+    caption=f"- عدد المستخدمين: {len(db['users'])}\n- عدد الحسابات: {len(db['accounts'])}\n- عدد المجموعات: {len(db['groups'])}\n- عدد القنوات: {len(db.get('channels',{}))}\n- شغال: {len(posting_tasks)}\n- اليوم: {stats_today['count']}\n- 📢 اجباري: {ch}\n- 👥 مشتركين القناة الكلي: {total_forced}\n- 🚫 اللي حظروا البوت: {len(db.get('blocked_users',[]))}\n- VIP: {len(db['vip'])}"
     await callback.message.edit_text(caption, reply_markup=Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]]))
 
 @app.on_callback_query(filters.regex(r"^(vipAdmin)$"))
 async def vipAdmin(_: Client, callback: CallbackQuery):
     if callback.from_user.id!=owner: return
-    markup=Markup([[Button("➕ تفعيل VIP", callback_data="vipAdd"), Button("➖ الغاء VIP", callback_data="vipDel")],[Button("📋 قائمة VIP", callback_data="vipList"), Button("📢 اشتراك اجباري", callback_data="vipForced")],[Button("- العوده -", callback_data="toHome")]])
+    markup=Markup([[Button("➕ تفعيل VIP", callback_data="vipAdd"), Button("➖ الغاء VIP", callback_data="vipDel")],[Button("📋 قائمة VIP", callback_data="vipList"), Button("📢 اشتراك اجباري", callback_data="vipForced")],[Button("📢 اذاعة", callback_data="broadcastMenu")],[Button("- العوده -", callback_data="toHome")]])
     await callback.message.edit_text("👑 VIP", reply_markup=markup)
+
+@app.on_callback_query(filters.regex(r"^(broadcastMenu)$"))
+async def broadcastMenu(_: Client, callback: CallbackQuery):
+    if callback.from_user.id!=owner: return
+    markup=Markup([[Button(f"👤 للمستخدمين ({len(db['users'])})", callback_data="broadcast_users")],[Button(f"👥 للمجموعات ({len(db['groups'])})", callback_data="broadcast_groups")],[Button(f"📢 للقنوات ({len(db.get('channels',{}))})", callback_data="broadcast_channels")],[Button("🌍 للكل", callback_data="broadcast_all")],[Button("- العوده -", callback_data="toHome")]])
+    await callback.message.edit_text("📢 اذاعة\n\nاختر وين تريد تدز:", reply_markup=markup)
+
+@app.on_callback_query(filters.regex(r"^(broadcast_users|broadcast_groups|broadcast_channels|broadcast_all)$"))
+async def broadcastAsk(_: Client, callback: CallbackQuery):
+    if callback.from_user.id!=owner: return
+    target=callback.data.replace("broadcast_","")
+    await callback.message.delete()
+    try: ask=await wait_input(owner,f"📢 اذاعة لـ {target}\n\nدز الرسالة (نص / صورة / فيديو)\n/cancel للالغاء",timeout=120,reply_markup=ForceReply(selective=True))
+    except TimeOut: return await callback.message.reply("- نفد الوقت.")
+    if is_cancel(ask.text or ""): return await ask.reply("- تم الالغاء.")
+    await ask.reply(f"⏳ جاري الارسال لـ {target} ...")
+    sent,failed=await do_broadcast(target,ask)
+    await ask.reply(f"✅ تمت الاذاعة\n\n📤 وصلت لـ: {sent}\n❌ فشل: {failed}\n🎯 النوع: {target}\n🚫 اللي حظروا البوت: {len(db.get('blocked_users',[]))}", reply_markup=toHomeMarkup)
 
 @app.on_callback_query(filters.regex(r"^(vipAdd)$"))
 async def vipAdd(_: Client, callback: CallbackQuery):
@@ -679,66 +778,5 @@ async def vipForced(_: Client, callback: CallbackQuery):
         s=get_settings(owner); s["forced_channel"]=None; save(); return await ask.reply("تم تعطيل الاجباري ✅", reply_markup=Markup([[Button("- العوده -", callback_data="toHome")]]))
     cleaned=txt.replace("https://","").replace("http://","").replace("t.me/","").replace("telegram.me/","").replace("@","").split("/")[0].split("?")[0].strip()
     s=get_settings(owner); s["forced_channel"]="@"+cleaned; save()
-    await ask.reply(f"تم ✅ اجباري = @{cleaned}", reply_markup=Markup([[Button("- العوده -", callback_data="toHome")]]))
-
-@app.on_callback_query(filters.regex(r"^(checkMyVip)$"))
-async def checkMyVip(_: Client, callback: CallbackQuery):
-    uid=callback.from_user.id
-    if is_vip(uid): await callback.message.edit_text(f"VIP ✅\n{vip_left(uid)}", reply_markup=backMarkup)
-    else: await callback.message.edit_text(f"عادي ❌\nراسل: {DEV}", reply_markup=Markup([[Button("📩 راسل", url=f"https://t.me/{DEV.replace('@','')}")]]))
-
-@app.on_callback_query(filters.regex(r"^(checkAcc)$"))
-async def checkAcc(_: Client, callback: CallbackQuery):
-    uid=callback.from_user.id; txt="🔍 فحص:\n\n"
-    for k,v in db["accounts"].items():
-        if v["owner"]!=uid and not is_admin(uid): continue
-        running=f"{uid}_posting" in posting_tasks
-        txt+=f"{v.get('phone',k)} - {'شغال ✅' if running else 'متوقف ⏹️'}{' ⛔ ايقاف' if is_force(k) else ''}\n"
-    await callback.message.edit_text(txt, reply_markup=backMarkup)
-
-@app.on_callback_query(filters.regex(r"^(noop)$"))
-async def noopCb(_: Client, callback: CallbackQuery):
-    await callback.answer(" ", show_alert=False)
-
-async def vip_checker():
-    while True:
-        now=dt.now()
-        for uid,v in list(db["vip"].items()):
-            if v.get("expire")=="lifetime": continue
-            try:
-                exp=dt.fromisoformat(v["expire"])
-                if (exp-now).total_seconds()<=86400 and not v.get("notified"):
-                    v["notified"]=True; save()
-                    try: await app.send_message(int(uid),"⚠️ اشتراكك VIP راح يخلص باجر!")
-                    except: pass
-                if now>exp:
-                    del db["vip"][uid]; save()
-                    try: await app.send_message(int(uid),"❌ انتهى اشتراكك VIP")
-                    except: pass
-            except: pass
-        await asyncio.sleep(3600)
-
-async def daily_report():
-    while True:
-        now=dt.now(); target=now.replace(hour=23,minute=59,second=0)
-        if target<now: target+=timedelta(days=1)
-        await asyncio.sleep((target-now).total_seconds())
-        for uid,s in list(db["settings"].items()):
-            if s.get("report_enabled"):
-                try: await app.send_message(int(uid), f"📊 تقرير يومي\nنشرت اليوم: {stats_today['count']}")
-                except: pass
-        stats_today["count"]=0
-
-async def reStartPosting():
-    await asyncio.sleep(30)
-    for uid in list(db["settings"].keys()):
-        s=db["settings"][uid]
-        if s.get("last_post_accs") and s.get("last_post_groups"):
-            key=f"{uid}_posting"
-            if key not in posting_tasks: posting_tasks[key]=asyncio.create_task(posting_loop(int(uid)))
-
-async def main():
-    asyncio.create_task(reStartPosting()); asyncio.create_task(vip_checker()); asyncio.create_task(daily_report())
-    await app.start(); await idle()
-if __name__=="__main__":
-    loop.run_until_complete(main())
+    total=await get_forced_total()
+    a
