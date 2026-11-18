@@ -98,7 +98,7 @@ account_clients = {}
 stats_today = {"count":0}
 stealth_counter = {}
 
-# ===== اشعار اشتراك + حظر + عدد المشتركين الكلي =====
+# ===== اشعار اشتراك + حظر =====
 async def get_forced_total():
     ch=get_forced()
     if not ch: return 0
@@ -124,7 +124,7 @@ async def notify_blocked(uid, first_name, username):
     try: await app.send_message(owner, f"🚫 واحد حظر البوت\n\n🆔 {uid}\n👤 الاسم: {first_name or ''}\n🔗 اليوزر: @{username or 'ماكو'}\n\n📊 اللي حظروا البوت: {blocked_count}\n📊 المستخدمين الباقين: {remaining}")
     except: pass
 
-@app.on_my_chat_member()
+@app.on_chat_member_updated()
 async def on_my_chat_member(_, update: ChatMemberUpdated):
     try:
         if update.chat.type.value=="private" or str(update.chat.type)=="private":
@@ -480,7 +480,7 @@ async def setDelay(_: Client, callback: CallbackQuery):
         try: d=int(ask.text); s["delay"]=d if d>=30 else 30; save(); await ask.reply(f"تم: {s['delay']} ثانية ✅", reply_markup=toHomeMarkup)
         except: await ask.reply("ارسل رقم")
 
-# ===== الاعدادات - مكان واحد فقط للتفعيل =====
+# ===== الاعدادات =====
 @app.on_callback_query(filters.regex(r"^(autoSettings)$"))
 async def autoSettings(_: Client, callback: CallbackQuery):
     s=get_settings(callback.from_user.id)
