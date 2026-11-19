@@ -42,6 +42,10 @@ def read(fp):
     if not os.path.exists(fp):
         write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"blocked_users":[],"stats_per_user":{},"last_report_date":None})
     with open(fp, encoding="utf-8") as f: return json.load(f)
+
+def save():
+    write("data.json", db)
+
 db = read("data.json")
 for _k,_v in {"channels":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None}.items():
     if _k not in db: db[_k]=_v
@@ -49,7 +53,6 @@ for _k,_v in {"channels":{},"blocked_users":[],"stats_per_user":{},"last_report_
 if "referrals" in db:
     del db["referrals"]
     save()
-def save(): write("data.json", db)
 
 def get_settings(uid):
     uid=str(uid)
@@ -224,11 +227,9 @@ async def start(_: Client, message: Message):
     except: pass
     is_new=str(uid) not in db["users"]
     db["users"][str(uid)]={"name":message.from_user.first_name or "","username":message.from_user.username or "","id":uid}; save()
-    # ===== VIP شهر مجاني لاول دخول - بدون احالة =====
     if is_new and not is_admin(uid):
         exp = dt.now() + timedelta(days=30)
         db["vip"][str(uid)]={"expire":exp.isoformat(),"notified":False,"free_month":True}; save()
-        # اشعار للادمن بالاشتراك المجاني
         try: await app.send_message(owner, f"🎁 واحد حصل اشتراك مجاني شهر\n\n👤 الاسم: {message.from_user.first_name or ''}\n🔗 اليوزر: @{message.from_user.username or 'ماكو'}\n🆔 الايدي: {uid}\n📅 ينتهي: {exp.strftime('%Y-%m-%d')}\n📊 العدد الكلي: {len(db['users'])}")
         except: pass
         try: await app.send_message(owner,f"👤 مستخدم جديد دخل البوت\n\n🆔 {uid}\n👤 الاسم: {message.from_user.first_name or ''}\n🔗 اليوزر: @{message.from_user.username or 'ماكو'}\n📊 العدد الكلي: {len(db['users'])}")
@@ -239,7 +240,6 @@ async def start(_: Client, message: Message):
     await notify_subscribed(uid, message.from_user.first_name or "", message.from_user.username or "")
     if not is_vip(uid):
         return await message.reply(f"❌ اشتراكك خلص\nراسل المطور للتفعيل: {DEV}", reply_markup=Markup([[Button("📩 راسل المطور", url=f"https://t.me/{DEV.replace('@','')}")]]))
-    # اذا جديد نبلغه بالهدية
     if is_new:
         try: await message.reply("🎁 مبروك! حصلت اشتراك VIP مجاني لمدة شهر كامل 👑\nاستمتع بكل مميزات البوت بدون حدود!")
         except: pass
