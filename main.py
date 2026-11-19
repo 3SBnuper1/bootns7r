@@ -40,11 +40,15 @@ def write(fp, data):
     with open(fp, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
 def read(fp):
     if not os.path.exists(fp):
-        write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"referrals":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None})
+        write(fp, {"users":{},"accounts":{},"groups":{},"channels":{},"vip":{},"settings":{},"blocked":{},"force_stopped":[],"subscribed":[],"blocked_users":[],"stats_per_user":{},"last_report_date":None})
     with open(fp, encoding="utf-8") as f: return json.load(f)
 db = read("data.json")
 for _k,_v in {"channels":{},"blocked_users":[],"stats_per_user":{},"last_report_date":None}.items():
     if _k not in db: db[_k]=_v
+# تنظيف قديم الاحالة اذا موجود بالملف القديم
+if "referrals" in db:
+    del db["referrals"]
+    save()
 def save(): write("data.json", db)
 
 def get_settings(uid):
@@ -95,14 +99,13 @@ def t(v): return "✅ مفعل" if v else "❌ معطل"
 def is_cancel(text): return text and text.strip().lower() in ["/cancel","cancel","الغاء"]
 
 def mainMarkup(uid):
-    r=[[Button("- 📁 الحسابات -", callback_data="accounts")],[Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],[Button("- 👥 احالتي 🎁 -", callback_data="myRef"), Button("- 🥷 التخفي -", callback_data="stealthInfo")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]]
+    r=[[Button("- 📁 الحسابات -", callback_data="accounts")],[Button("- 🚀 النشر -", callback_data="posting"), Button("- 👥 المجموعات -", callback_data="groups")],[Button("- 🥷 التخفي -", callback_data="stealthInfo")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]]
     if is_admin(uid):
         r.append([Button("- ➕ تفعيل VIP -", callback_data="vipAdd"), Button("- ➖ الغاء VIP -", callback_data="vipDel")])
         r.append([Button("- 📋 قائمة VIP -", callback_data="vipList"), Button("- 📢 اشتراك اجباري -", callback_data="vipForced")])
         r.append([Button("- 📊 احصائيات -", callback_data="statics"), Button("- 📢 اذاعة -", callback_data="broadcastMenu")])
     r.append([Button("- 👑 اشتراكي -", callback_data="checkMyVip"), Button("- 🔍 فحص -", callback_data="checkAcc")])
     return Markup(r)
-refMarkup = Markup([[Button("- احالتي 🎁 -", callback_data="myRef")],[Button("- ℹ️ معلومات حول البوت -", callback_data="aboutBot")]])
 backMarkup = Markup([[Button("- العوده -", callback_data="toHome")]])
 toHomeMarkup = Markup([[Button("- الصفحه الرئيسيه -", callback_data="toHome")]])
 
@@ -219,37 +222,27 @@ async def start(_: Client, message: Message):
         if uid == me.id:
             return
     except: pass
-    ref=None
-    if len(message.command)>1 and message.command[1].startswith("ref_"): ref=message.command[1].replace("ref_","")
     is_new=str(uid) not in db["users"]
     db["users"][str(uid)]={"name":message.from_user.first_name or "","username":message.from_user.username or "","id":uid}; save()
-    if is_new:
+    # ===== VIP شهر مجاني لاول دخول - بدون احالة =====
+    if is_new and not is_admin(uid):
+        exp = dt.now() + timedelta(days=30)
+        db["vip"][str(uid)]={"expire":exp.isoformat(),"notified":False,"free_month":True}; save()
+        # اشعار للادمن بالاشتراك المجاني
+        try: await app.send_message(owner, f"🎁 واحد حصل اشتراك مجاني شهر\n\n👤 الاسم: {message.from_user.first_name or ''}\n🔗 اليوزر: @{message.from_user.username or 'ماكو'}\n🆔 الايدي: {uid}\n📅 ينتهي: {exp.strftime('%Y-%m-%d')}\n📊 العدد الكلي: {len(db['users'])}")
+        except: pass
         try: await app.send_message(owner,f"👤 مستخدم جديد دخل البوت\n\n🆔 {uid}\n👤 الاسم: {message.from_user.first_name or ''}\n🔗 اليوزر: @{message.from_user.username or 'ماكو'}\n📊 العدد الكلي: {len(db['users'])}")
         except: pass
-    if is_new and ref and ref!=str(uid) and ref in db["users"]:
-        db.setdefault("referrals",{})
-        if ref not in db["referrals"]: db["referrals"][ref]={"invited":[],"rewarded":False}
-        if uid not in db["referrals"][ref]["invited"]:
-            db["referrals"][ref]["invited"].append(uid); save()
-            cnt=len(db["referrals"][ref]["invited"])
-            try: await app.send_message(int(ref), f"👥 احالة جديدة! صار عندك {cnt}/3")
-            except: pass
-            if cnt>=3 and not db["referrals"][ref].get("rewarded"):
-                db["referrals"][ref]={"invited":[],"rewarded":False}
-                old=db["vip"].get(ref)
-                if old and old.get("expire")!="lifetime":
-                    try: exp=dt.fromisoformat(old["expire"])+timedelta(days=1)
-                    except: exp=dt.now()+timedelta(days=1)
-                else: exp=dt.now()+timedelta(days=1)
-                db["vip"][ref]={"expire":exp.isoformat(),"notified":False}; save()
-                try: await app.send_message(int(ref), "🎁 مبروك! جبت 3 احالات، حصلت يوم VIP مجاني 👑")
-                except: pass
     sub=await subscription(message)
     if isinstance(sub, str):
         return await message.reply(f"- اشترك بقناة البوت اولاً:\n{sub}\nبعدها ارسل /start")
     await notify_subscribed(uid, message.from_user.first_name or "", message.from_user.username or "")
     if not is_vip(uid):
-        return await message.reply(f"❌ غير مشترك VIP\nراسل المطور: {DEV}\n\n🎁 او جيب 3 اشخاص من رابطك وتاخذ يوم VIP مجاني!", reply_markup=refMarkup)
+        return await message.reply(f"❌ اشتراكك خلص\nراسل المطور للتفعيل: {DEV}", reply_markup=Markup([[Button("📩 راسل المطور", url=f"https://t.me/{DEV.replace('@','')}")]]))
+    # اذا جديد نبلغه بالهدية
+    if is_new:
+        try: await message.reply("🎁 مبروك! حصلت اشتراك VIP مجاني لمدة شهر كامل 👑\nاستمتع بكل مميزات البوت بدون حدود!")
+        except: pass
     await message.reply("- مرحبا بك في بوت النشر التلقائي", reply_markup=mainMarkup(uid))
 
 @app.on_callback_query(filters.regex(r"^(toHome)$"))
@@ -275,18 +268,10 @@ async def aboutBot(_: Client, callback: CallbackQuery):
 - ايقاف اجباري طوارئ
 
 🥷 التخفي: النشرة 1 و 2 عادي، النشرة 3 رد على رسالة موجودة
-👥 الاحالة: كل 3 = يوم VIP مجاني
+🎁 اول دخول: VIP مجاني لمدة شهر
 """
-    back=Markup([[Button("- العوده -", callback_data="toHome")]]) if is_vip(callback.from_user.id) else refMarkup
+    back=Markup([[Button("- العوده -", callback_data="toHome")]]) if is_vip(callback.from_user.id) else Markup([[Button("📩 راسل المطور", url=f"https://t.me/{DEV.replace('@','')}")]])
     await callback.message.edit_text(txt, reply_markup=back)
-
-@app.on_callback_query(filters.regex(r"^(myRef)$"))
-async def myRef(_: Client, callback: CallbackQuery):
-    uid=str(callback.from_user.id); me=await app.get_me()
-    link=f"https://t.me/{me.username}?start=ref_{uid}"
-    cnt=len(db.get("referrals",{}).get(uid,{"invited":[]}).get("invited",[]))
-    back=Markup([[Button("- العوده -", callback_data="toHome")]]) if is_vip(int(uid)) else refMarkup
-    await callback.message.edit_text(f"👥 نظام الاحالة 🎁\n\n🔗 رابطك:\n{link}\n\n👥 جبت: {cnt}/3\n🎁 كل 3 تاخذ يوم VIP مجاني!", reply_markup=back)
 
 @app.on_callback_query(filters.regex(r"^(stealthInfo)$"))
 async def stealthInfo(_: Client, callback: CallbackQuery):
@@ -499,7 +484,6 @@ async def captionShow(_: Client, callback: CallbackQuery):
     txt="📋 الكلايش الحالية:\n\n"+"\n".join([f"{i}. {c}" for i,c in enumerate(caps,1)]) if caps else "ماكو كلايش"
     await callback.message.edit_text(txt, reply_markup=Markup([[Button("- العوده -", callback_data="toHome")]]))
 
-# ===== زر المدة - جديد: بين رسالة ورسالة فقط =====
 @app.on_callback_query(filters.regex(r"^(setDelay)$"))
 async def setDelay(_: Client, callback: CallbackQuery):
     uid=callback.from_user.id; s=get_settings(uid); await callback.message.delete()
@@ -654,7 +638,6 @@ def stop_all_acc(uid,acc_key):
     if key in posting_tasks: posting_tasks[key].cancel(); del posting_tasks[key]; return 1
     return 0
 
-# ===== النشر الجديد: كل حساب + كل مجموعة دفعة وحدة، بدون دورة، التخفي شغال =====
 async def posting_loop(uid):
     s=get_settings(uid)
     accs=s.get("last_post_accs",[k for k,v in db["accounts"].items() if v["owner"]==uid])
@@ -689,7 +672,6 @@ async def send_one(uid,acc_key,grp_id):
         try: me=await client.get_me()
         except: raise AuthKeyUnregistered("جلسة منتهية")
         caption_to_send=random.choice(s["captions"]) if s.get("caption_mode")=="multi" and s.get("captions") else s.get("caption","اهلا بكم 🔥")
-        # ===== التخفي - شغال =====
         is_reply=False
         if s.get("stealth_enabled"):
             ck=f"{acc_key}_{grp_id}"; c=stealth_counter.get(ck,0)
@@ -963,7 +945,7 @@ async def vip_checker():
                     except: pass
                 if now>exp:
                     del db["vip"][uid]; save()
-                    try: await app.send_message(int(uid),"❌ انتهى اشتراكك VIP")
+                    try: await app.send_message(int(uid),f"❌ اشتراكك خلص\nراسل المطور للتفعيل: {DEV}")
                     except: pass
             except: pass
         await asyncio.sleep(3600)
