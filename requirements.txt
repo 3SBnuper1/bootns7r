@@ -1,3 +1,6 @@
-pyrogram==2.0.106
-tgcrypto
-pytz
+python-telegram-bot==20.7
+transformers
+torch
+Pillow
+opencv-python
+numpy
